@@ -7,6 +7,9 @@ export interface ChatUser {
   type?: 'guest' | 'member' | 'admin'
   systemRole?: string
   membershipPlan?: string
+  nicknameColor?: string | null
+  badge?: string | null
+  roomRole?: string
 }
 
 export interface ChatRoom {
@@ -26,6 +29,9 @@ export interface ChatMessage {
   senderId: string
   senderName: string
   senderAvatar: string
+  senderNicknameColor?: string | null
+  senderBadge?: string | null
+  senderHasBubbleStyle?: boolean
   type: 'text' | 'system' | 'media'
   content: string
   createdAt: number

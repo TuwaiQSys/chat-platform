@@ -14,7 +14,7 @@ import { seedRooms } from './modules/rooms/seed.js'
 import { executeModAction, isUserMuted, isUserBanned, isShadowBanned, deleteMessage, canModerate } from './modules/moderation/moderation.service.js'
 import { recordFingerprint, type ClientSignals } from './modules/anti-abuse/fingerprint.service.js'
 import { seedAdmin, getAvatarColor, verifyToken } from './modules/identity/auth.service.js'
-import { seedPlans } from './modules/identity/membership-plan.model.js'
+import { MembershipPlan, seedPlans } from './modules/identity/membership-plan.model.js'
 import authRoutes from './modules/identity/auth.routes.js'
 import adminRoutes from './modules/identity/admin.routes.js'
 import { logAction } from './modules/audit/audit.service.js'
@@ -35,7 +35,44 @@ app.use('/api/auth', authRoutes)
 app.use('/api/admin', adminRoutes)
 
 // --- In-memory socket → user mapping ---
-const socketToUser = new Map<string, { id: string; nickname: string; avatar: string; currentRoom: string | null }>()
+interface SocketUser {
+  id: string
+  nickname: string
+  avatar: string
+  currentRoom: string | null
+  nicknameColor: string | null
+  badge: string | null
+  entryEffect: string | null
+  hasBubbleStyle: boolean
+  type: string
+  systemRole: string
+}
+const socketToUser = new Map<string, SocketUser>()
+
+// --- Plan cache (avoids repeated DB lookups) ---
+interface PlanPerks {
+  nicknameColor: string | null
+  badge: string | null
+  entryEffect: string | null
+  hasBubbleStyle: boolean
+}
+const planCache = new Map<string, PlanPerks>()
+
+async function getPlanPerks(planName?: string | null): Promise<PlanPerks> {
+  if (!planName || planName === 'free') return { nicknameColor: null, badge: null, entryEffect: null, hasBubbleStyle: false }
+
+  if (planCache.has(planName)) return planCache.get(planName)!
+
+  const plan = await MembershipPlan.findOne({ name: planName })
+  const perks: PlanPerks = {
+    nicknameColor: plan?.permissions?.nicknameColor || null,
+    badge: plan?.permissions?.badge || null,
+    entryEffect: plan?.permissions?.entryEffect || null,
+    hasBubbleStyle: plan?.permissions?.hasBubbleStyle ?? false,
+  }
+  planCache.set(planName, perks)
+  return perks
+}
 
 // --- Helper: get online count ---
 function getOnlineCount(): number {
@@ -44,19 +81,24 @@ function getOnlineCount(): number {
 
 // --- Helper: get room member list ---
 async function getRoomMembersForClient(roomId: string) {
-  const members = await Member.find({ roomId }).populate('userId', 'nickname avatarColor systemRole')
-  return members
-    .filter((m) => m.userId)
-    .map((m) => {
-      const u = m.userId as any
-      return {
-        id: u._id.toString(),
-        nickname: u.nickname,
-        avatar: u.avatarColor,
-        systemRole: u.systemRole,
-        roomRole: m.roomRole,
-      }
+  const members = await Member.find({ roomId }).populate('userId', 'nickname avatarColor systemRole membershipPlan type')
+  const result = []
+  for (const m of members) {
+    if (!m.userId) continue
+    const u = m.userId as any
+    const perks = await getPlanPerks(u.membershipPlan)
+    result.push({
+      id: u._id.toString(),
+      nickname: u.nickname,
+      avatar: u.avatarColor,
+      systemRole: u.systemRole,
+      roomRole: m.roomRole,
+      type: u.type,
+      nicknameColor: perks.nicknameColor,
+      badge: perks.badge,
     })
+  }
+  return result
 }
 
 // --- Helper: get room list for client ---
@@ -167,11 +209,11 @@ io.on('connection', (socket) => {
       }
 
       currentUserId = user._id.toString()
-      socketToUser.set(socket.id, { id: currentUserId, nickname, avatar: avatarColor, currentRoom: null })
+      socketToUser.set(socket.id, { id: currentUserId, nickname, avatar: avatarColor, currentRoom: null, nicknameColor: null, badge: null, entryEffect: null, hasBubbleStyle: false, type: 'guest', systemRole: 'user' })
 
       await logAction({ actionType: 'user.join', actorId: user._id, metadata: { type: 'guest', ip } })
 
-      callback?.({ user: { id: currentUserId, nickname, avatar: avatarColor } })
+      callback?.({ user: { id: currentUserId, nickname, avatar: avatarColor, type: 'guest', nicknameColor: null, badge: null } })
       io.emit('users:count', getOnlineCount())
     } catch (err) {
       console.error('guest:join error:', err)
@@ -205,7 +247,8 @@ io.on('connection', (socket) => {
       })
 
       currentUserId = user._id.toString()
-      socketToUser.set(socket.id, { id: currentUserId, nickname: user.nickname, avatar: user.avatarColor, currentRoom: null })
+      const perks = await getPlanPerks(user.membershipPlan)
+      socketToUser.set(socket.id, { id: currentUserId, nickname: user.nickname, avatar: user.avatarColor, currentRoom: null, nicknameColor: perks.nicknameColor, badge: perks.badge, entryEffect: perks.entryEffect, hasBubbleStyle: perks.hasBubbleStyle, type: user.type, systemRole: user.systemRole })
 
       callback?.({
         user: {
@@ -215,6 +258,8 @@ io.on('connection', (socket) => {
           type: user.type,
           systemRole: user.systemRole,
           membershipPlan: user.membershipPlan,
+          nicknameColor: perks.nicknameColor,
+          badge: perks.badge,
         },
       })
       io.emit('users:count', getOnlineCount())
@@ -261,8 +306,19 @@ io.on('connection', (socket) => {
       if (socketUser) socketUser.currentRoom = data.roomId
       socket.join(data.roomId)
 
-      const joinMsg = await createSystemMessage(data.roomId, `${socketUser?.nickname} انضم إلى الغرفة`)
+      const badge = socketUser?.badge ? ` ${socketUser.badge}` : ''
+      const joinMsg = await createSystemMessage(data.roomId, `${socketUser?.nickname}${badge} انضم إلى الغرفة`)
       io.to(data.roomId).emit('message:new', joinMsg)
+
+      // Emit entry effect for premium users
+      if (socketUser?.entryEffect) {
+        io.to(data.roomId).emit('user:entry-effect', {
+          userId: currentUserId,
+          nickname: socketUser.nickname,
+          effect: socketUser.entryEffect,
+          badge: socketUser.badge,
+        })
+      }
 
       const members = await getRoomMembersForClient(data.roomId)
       io.to(data.roomId).emit('room:members', members)
@@ -340,6 +396,9 @@ io.on('connection', (socket) => {
         senderId: currentUserId,
         senderName: socketUser.nickname,
         senderAvatar: socketUser.avatar,
+        senderNicknameColor: socketUser.nicknameColor,
+        senderBadge: socketUser.badge,
+        senderHasBubbleStyle: socketUser.hasBubbleStyle,
         type: 'text' as const,
         content,
         createdAt: msg.createdAt.getTime(),
@@ -478,6 +537,116 @@ io.on('connection', (socket) => {
   })
 
   // --- Typing ---
+
+  // --- Broadcast (admin only) ---
+  socket.on('broadcast:send', async (data: { content: string; roomId?: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+      const user = await User.findById(currentUserId)
+      if (!user || user.systemRole !== 'admin') return callback?.({ error: 'صلاحيات غير كافية' })
+
+      if (data.roomId) {
+        const msg = await createSystemMessage(data.roomId, `📢 ${data.content}`)
+        io.to(data.roomId).emit('message:new', msg)
+      } else {
+        // Global broadcast to all connected sockets
+        io.emit('broadcast:global', { content: data.content, from: user.nickname, createdAt: Date.now() })
+      }
+      await logAction({ actionType: 'broadcast.send', actorId: currentUserId, roomId: data.roomId, metadata: { content: data.content } })
+      callback?.({ success: true })
+    } catch (err) {
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  // --- Private Messages (DM) ---
+  socket.on('dm:send', async (data: { targetUserId: string; content: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+      const content = data.content?.trim()
+      if (!content || content.length > 500) return callback?.({ error: 'الرسالة غير صالحة' })
+
+      // Check if sender has DM permission
+      const sender = await User.findById(currentUserId)
+      if (sender?.membershipPlan && sender.membershipPlan !== 'free') {
+        // Allowed
+      } else if (sender?.systemRole === 'admin' || sender?.systemRole === 'moderator') {
+        // Allowed
+      } else {
+        // Check plan
+        const plan = sender?.membershipPlan ? await MembershipPlan.findOne({ name: sender.membershipPlan }) : null
+        if (!plan?.permissions?.canSendPrivateMessages) {
+          return callback?.({ error: 'الرسائل الخاصة تتطلب عضوية مميزة' })
+        }
+      }
+
+      const socketUser = socketToUser.get(socket.id)
+      const targetSocketEntry = [...socketToUser.entries()].find(([, u]) => u.id === data.targetUserId)
+
+      if (!targetSocketEntry) return callback?.({ error: 'المستخدم غير متصل' })
+
+      const dmPayload = {
+        id: crypto.randomBytes(12).toString('hex'),
+        senderId: currentUserId,
+        senderName: socketUser?.nickname || '',
+        senderAvatar: socketUser?.avatar || '',
+        senderNicknameColor: socketUser?.nicknameColor || null,
+        senderBadge: socketUser?.badge || null,
+        content,
+        createdAt: Date.now(),
+      }
+
+      const [targetSocketId] = targetSocketEntry
+      const targetSocket = io.sockets.sockets.get(targetSocketId)
+      targetSocket?.emit('dm:receive', dmPayload)
+      socket.emit('dm:sent', { ...dmPayload, targetUserId: data.targetUserId })
+
+      callback?.({ success: true })
+    } catch (err) {
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  // --- Room Creation (permission-based) ---
+  socket.on('room:create', async (data: { name: string; description?: string; type?: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+
+      const user = await User.findById(currentUserId)
+      if (!user) return callback?.({ error: 'المستخدم غير موجود' })
+
+      // Check permission
+      if (user.systemRole !== 'admin') {
+        const plan = user.membershipPlan ? await MembershipPlan.findOne({ name: user.membershipPlan }) : null
+        if (!plan?.permissions?.canCreateRooms) {
+          return callback?.({ error: 'إنشاء الغرف يتطلب عضوية مميزة' })
+        }
+        // Check max rooms owned
+        const ownedRooms = await Room.countDocuments({ createdBy: currentUserId, status: 'active' })
+        if (plan.permissions.maxRoomsOwned && ownedRooms >= plan.permissions.maxRoomsOwned) {
+          return callback?.({ error: `وصلت للحد الأقصى (${plan.permissions.maxRoomsOwned} غرف)` })
+        }
+      }
+
+      const name = data.name?.trim()
+      if (!name || name.length < 2 || name.length > 30) return callback?.({ error: 'اسم الغرفة غير صالح' })
+
+      const room = await Room.create({
+        name,
+        description: data.description?.trim() || '',
+        type: data.type || 'text',
+        createdBy: currentUserId,
+        config: { maxMembers: 30, slowModeSeconds: 0, allowMediaUpload: false, maxMessageLength: 500, linkPolicy: 'allow', wordBlocklist: [] },
+      })
+
+      await logAction({ actionType: 'room.create', actorId: currentUserId, targetId: room._id.toString(), targetType: 'room' })
+
+      io.emit('rooms:update', await getRoomListForClient())
+      callback?.({ room: { id: room._id.toString(), name: room.name } })
+    } catch (err) {
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
 
   socket.on('typing:start', () => {
     const socketUser = socketToUser.get(socket.id)

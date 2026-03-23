@@ -59,6 +59,7 @@ export default function MembershipsPage() {
     nicknameColor: 'لون الاسم',
     canChangeNicknameColor: 'تغيير لون الاسم',
     canSendPrivateMessages: 'رسائل خاصة',
+    hasBubbleStyle: 'فقاعة مميزة',
     badge: 'الشارة',
     entryEffect: 'تأثير الدخول',
   }

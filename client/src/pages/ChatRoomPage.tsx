@@ -21,7 +21,9 @@ export default function ChatRoomPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [entryEffect, setEntryEffect] = useState<{ userId: string; nickname: string; effect: string; badge: string | null } | null>(null)
   const [actionMenu, setActionMenu] = useState<{ target: ChatUser; position: { x: number; y: number } } | null>(null)
+  const showToastFn = useRef((msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4000) })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>()
@@ -67,11 +69,22 @@ export default function ChatRoomPage() {
       }))
     }
 
+    const onEntryEffect = (data: { userId: string; nickname: string; effect: string; badge: string | null }) => {
+      setEntryEffect(data)
+      setTimeout(() => setEntryEffect(null), 3000)
+    }
+
+    const onBroadcast = (data: { content: string; from: string }) => {
+      showToastFn.current(`📢 ${data.from}: ${data.content}`)
+    }
+
     socket.on('room:kicked', onKicked)
     socket.on('room:banned', onBanned)
     socket.on('user:banned', onGlobalBanned)
     socket.on('room:muted', onMuted)
     socket.on('message:deleted', onMessageDeleted)
+    socket.on('user:entry-effect', onEntryEffect)
+    socket.on('broadcast:global', onBroadcast)
 
     return () => {
       socket.off('room:kicked', onKicked)
@@ -79,6 +92,8 @@ export default function ChatRoomPage() {
       socket.off('user:banned', onGlobalBanned)
       socket.off('room:muted', onMuted)
       socket.off('message:deleted', onMessageDeleted)
+      socket.off('user:entry-effect', onEntryEffect)
+      socket.off('broadcast:global', onBroadcast)
     }
   }, [navigate, setCurrentRoom, setMessages, setMembers])
 
@@ -147,6 +162,21 @@ export default function ChatRoomPage() {
       {toast && (
         <div className="absolute left-1/2 top-14 z-50 -translate-x-1/2 animate-fade-in rounded-xl border border-red-500/20 bg-red-900/80 px-4 py-2.5 text-sm text-red-200 shadow-lg backdrop-blur">
           {toast}
+        </div>
+      )}
+
+      {/* Entry effect overlay */}
+      {entryEffect && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center animate-fade-in">
+          <div className={`rounded-2xl px-8 py-4 text-center backdrop-blur-md ${
+            entryEffect.effect === 'sparkle' ? 'bg-purple-600/20 ring-1 ring-purple-400/30' : 'bg-amber-600/20 ring-1 ring-amber-400/30'
+          }`}>
+            <p className="text-2xl mb-1">{entryEffect.badge || '✨'}</p>
+            <p className={`text-lg font-bold ${entryEffect.effect === 'sparkle' ? 'text-purple-300' : 'text-amber-300'}`}>
+              {entryEffect.nickname}
+            </p>
+            <p className="text-xs text-white/40 mt-1">انضم إلى الغرفة</p>
+          </div>
         </div>
       )}
 
@@ -304,6 +334,9 @@ function MessageBubble({
   })
 
   const senderMember = members.find((m) => m.id === message.senderId)
+  const nicknameColor = message.senderNicknameColor || senderMember?.nicknameColor
+  const badge = message.senderBadge || senderMember?.badge
+  const hasBubble = message.senderHasBubbleStyle
 
   return (
     <div className={`flex gap-2 py-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'} animate-fade-in`}>
@@ -319,16 +352,18 @@ function MessageBubble({
       </div>
 
       <div className={`max-w-[75%] sm:max-w-[65%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-        {/* Name + time */}
-        <div className={`flex items-center gap-2 px-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+        {/* Name + badge + time */}
+        <div className={`flex items-center gap-1.5 px-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
           <span
-            className={`text-xs font-medium text-white/40 ${!isOwn ? 'cursor-pointer hover:text-white/60' : ''}`}
+            className={`text-xs font-semibold ${!isOwn ? 'cursor-pointer hover:brightness-125' : ''}`}
+            style={{ color: nicknameColor || 'rgba(255,255,255,0.4)' }}
             onClick={(e) => {
               if (!isOwn && senderMember) onUsernameClick(senderMember, e)
             }}
           >
             {message.senderName}
           </span>
+          {badge && <span className="text-[11px]">{badge}</span>}
           {senderMember?.systemRole && senderMember.systemRole !== 'user' && (
             <Shield className="h-3 w-3 text-indigo-400" />
           )}
@@ -340,8 +375,15 @@ function MessageBubble({
           className={`mt-0.5 rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
             isOwn
               ? 'rounded-tl-md bg-indigo-600/20 text-indigo-100'
-              : 'rounded-tr-md bg-white/[0.04] text-white/80'
+              : hasBubble && nicknameColor
+                ? 'rounded-tr-md text-white/90'
+                : 'rounded-tr-md bg-white/[0.04] text-white/80'
           }`}
+          style={
+            !isOwn && hasBubble && nicknameColor
+              ? { background: `${nicknameColor}15`, borderLeft: `2px solid ${nicknameColor}40` }
+              : undefined
+          }
         >
           {message.content}
         </div>
@@ -365,11 +407,15 @@ function MemberItem({ member, isYou, onClick }: { member: ChatUser; isYou: boole
         </div>
         <div className="absolute -bottom-0.5 -left-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0d0d18] bg-emerald-500" />
       </div>
-      <div className="flex items-center gap-1.5 truncate">
-        <span className="truncate text-sm text-white/60">
+      <div className="flex items-center gap-1 truncate">
+        <span
+          className="truncate text-sm font-medium"
+          style={{ color: member.nicknameColor || 'rgba(255,255,255,0.6)' }}
+        >
           {member.nickname}
-          {isYou && <span className="mr-1 text-[10px] text-white/20">(أنت)</span>}
         </span>
+        {member.badge && <span className="text-[11px] shrink-0">{member.badge}</span>}
+        {isYou && <span className="text-[10px] text-white/20 shrink-0">(أنت)</span>}
         {member.systemRole && member.systemRole !== 'user' && (
           <Shield className="h-3 w-3 shrink-0 text-indigo-400" />
         )}

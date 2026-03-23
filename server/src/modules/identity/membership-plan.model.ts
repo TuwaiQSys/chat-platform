@@ -11,6 +11,7 @@ export interface IPermissions {
   nicknameColor: string | null  // null = default, hex color = custom
   canChangeNicknameColor: boolean
   canSendPrivateMessages: boolean
+  hasBubbleStyle: boolean  // colored message bubble instead of plain
   badge?: string
   entryEffect?: string  // e.g. 'glow', 'sparkle' — visual effect on join
 }
@@ -37,6 +38,7 @@ const PermissionsSchema = new Schema<IPermissions>(
     nicknameColor: { type: String, default: null },
     canChangeNicknameColor: { type: Boolean, default: false },
     canSendPrivateMessages: { type: Boolean, default: false },
+    hasBubbleStyle: { type: Boolean, default: false },
     badge: String,
     entryEffect: String,
   },
@@ -79,6 +81,7 @@ export async function seedPlans() {
         nicknameColor: null,
         canChangeNicknameColor: false,
         canSendPrivateMessages: false,
+        hasBubbleStyle: false,
       },
     },
     {
@@ -95,6 +98,7 @@ export async function seedPlans() {
         nicknameColor: '#f59e0b',
         canChangeNicknameColor: true,
         canSendPrivateMessages: true,
+        hasBubbleStyle: true,
         badge: '⭐',
         entryEffect: 'glow',
       },
@@ -113,6 +117,7 @@ export async function seedPlans() {
         nicknameColor: '#a855f7',
         canChangeNicknameColor: true,
         canSendPrivateMessages: true,
+        hasBubbleStyle: true,
         badge: '👑',
         entryEffect: 'sparkle',
       },
