@@ -1,8 +1,10 @@
 import mongoose from 'mongoose'
-import { ModerationAction, type ModerationActionType } from './moderation-action.model.js'
+import { ModerationAction, type ModerationActionType, ACTION_PERMISSION_MAP } from './moderation-action.model.js'
 import { Member } from '../rooms/member.model.js'
 import { User } from '../identity/user.model.js'
 import { Message } from '../messages/message.model.js'
+import { Fingerprint } from '../anti-abuse/fingerprint.model.js'
+import { hasPermission, canModerateUser } from '../roles/role.service.js'
 import { logAction } from '../audit/audit.service.js'
 
 interface ModActionParams {
@@ -11,73 +13,61 @@ interface ModActionParams {
   moderatorId: string
   roomId?: string
   reason: string
-  duration?: number // minutes, 0 = permanent
+  duration?: number        // minutes, 0 = permanent
+  ipAddress?: string       // for IP bans
+  fingerprintHash?: string // for fingerprint bans
 }
 
-// Permission hierarchy: admin > moderator > user
-const ROLE_PRIORITY: Record<string, number> = { admin: 100, moderator: 50, user: 0 }
-
-export async function canModerate(
+export async function canPerformAction(
   moderatorId: string,
   targetUserId: string,
-  action: ModerationActionType,
-  roomId?: string,
+  actionType: ModerationActionType,
 ): Promise<{ allowed: boolean; reason?: string }> {
-  const moderator = await User.findById(moderatorId)
-  const target = await User.findById(targetUserId)
-  if (!moderator || !target) return { allowed: false, reason: 'المستخدم غير موجود' }
-
-  // Can't moderate yourself
   if (moderatorId === targetUserId) return { allowed: false, reason: 'لا يمكنك تنفيذ هذا الإجراء على نفسك' }
 
-  const modPriority = ROLE_PRIORITY[moderator.systemRole] ?? 0
-  const targetPriority = ROLE_PRIORITY[target.systemRole] ?? 0
+  // Check priority — can't moderate someone with equal or higher priority
+  const canMod = await canModerateUser(moderatorId, targetUserId)
+  if (!canMod) return { allowed: false, reason: 'لا تملك صلاحية كافية (الهدف بدور أعلى)' }
 
-  // Can't moderate someone with equal or higher role
-  if (targetPriority >= modPriority) return { allowed: false, reason: 'لا تملك صلاحية كافية' }
+  // Check specific permission for this action
+  const requiredPermission = ACTION_PERMISSION_MAP[actionType]
+  if (!requiredPermission) return { allowed: false, reason: 'نوع الإجراء غير معروف' }
 
-  // Global actions (ban, shadow_ban) require admin
-  if (!roomId && ['ban', 'shadow_ban'].includes(action)) {
-    if (moderator.systemRole !== 'admin') return { allowed: false, reason: 'الحظر الشامل يتطلب صلاحية مسؤول' }
-  }
-
-  // Room-level checks
-  if (roomId) {
-    const modMember = await Member.findOne({ roomId, userId: moderatorId })
-    if (!modMember) return { allowed: false, reason: 'لست عضوًا في هذه الغرفة' }
-
-    // Room moderators can mute/kick, but only admins can ban
-    if (['mute', 'kick', 'warn', 'message_removed'].includes(action)) {
-      if (!['owner', 'moderator'].includes(modMember.roomRole) && moderator.systemRole === 'user') {
-        return { allowed: false, reason: 'لا تملك صلاحية في هذه الغرفة' }
-      }
-    }
-
-    if (['ban', 'shadow_ban'].includes(action)) {
-      if (modMember.roomRole !== 'owner' && moderator.systemRole !== 'admin') {
-        return { allowed: false, reason: 'الحظر يتطلب صلاحية مالك الغرفة أو مسؤول' }
-      }
-    }
-  }
+  const hasPerm = await hasPermission(moderatorId, requiredPermission)
+  if (!hasPerm) return { allowed: false, reason: 'لا تملك صلاحية هذا الإجراء' }
 
   return { allowed: true }
 }
 
 export async function executeModAction(params: ModActionParams) {
-  const { type, targetUserId, moderatorId, roomId, reason, duration } = params
+  const { type, targetUserId, moderatorId, roomId, reason, duration, ipAddress, fingerprintHash } = params
 
-  const check = await canModerate(moderatorId, targetUserId, type, roomId)
+  const check = await canPerformAction(moderatorId, targetUserId, type)
   if (!check.allowed) return { error: check.reason }
 
   const expiresAt = duration && duration > 0
     ? new Date(Date.now() + duration * 60 * 1000)
     : undefined
 
-  // Deactivate previous actions of same type for same target/room
-  await ModerationAction.updateMany(
-    { targetUserId, type, roomId: roomId || { $exists: false }, active: true },
-    { active: false },
-  )
+  // Deactivate previous actions of same type for same target/scope
+  const deactivateFilter: Record<string, unknown> = { targetUserId, type, active: true }
+  if (roomId) deactivateFilter.roomId = roomId
+  else deactivateFilter.roomId = { $exists: false }
+  await ModerationAction.updateMany(deactivateFilter, { active: false })
+
+  // For IP bans, auto-resolve IP from user if not provided
+  let resolvedIp = ipAddress
+  if (type === 'ban.ip' && !resolvedIp) {
+    const target = await User.findById(targetUserId)
+    resolvedIp = target?.lastIp || undefined
+  }
+
+  // For fingerprint bans, auto-resolve from latest fingerprint
+  let resolvedFingerprint = fingerprintHash
+  if ((type === 'ban.fingerprint' || type === 'ban.layered') && !resolvedFingerprint) {
+    const fp = await Fingerprint.findOne({ userId: targetUserId }).sort({ createdAt: -1 })
+    resolvedFingerprint = fp?.hash || undefined
+  }
 
   const action = await ModerationAction.create({
     type,
@@ -85,48 +75,37 @@ export async function executeModAction(params: ModActionParams) {
     roomId: roomId || undefined,
     moderatorId,
     reason,
+    duration,
     expiresAt,
     active: true,
+    ipAddress: resolvedIp,
+    fingerprintHash: resolvedFingerprint,
+    metadata: type === 'ban.layered' ? { ip: resolvedIp, fingerprint: resolvedFingerprint } : undefined,
   })
 
   // Apply side effects
-  switch (type) {
-    case 'mute':
-      if (roomId) {
-        await Member.updateOne(
-          { roomId, userId: targetUserId },
-          { roomRole: 'muted', mutedUntil: expiresAt || new Date('2099-12-31') },
-        )
-      }
-      break
+  if (type === 'kick.room' && roomId) {
+    await Member.deleteOne({ roomId, userId: targetUserId })
+  }
 
-    case 'ban':
-      if (roomId) {
-        await Member.deleteOne({ roomId, userId: targetUserId })
-      } else {
-        await User.updateOne({ _id: targetUserId }, { status: 'banned', bannedUntil: expiresAt })
-        await Member.deleteMany({ userId: targetUserId })
-      }
-      break
+  if (type === 'kick.global') {
+    await Member.deleteMany({ userId: targetUserId })
+  }
 
-    case 'kick':
-      if (roomId) {
-        await Member.deleteOne({ roomId, userId: targetUserId })
-      }
-      break
+  if (type.startsWith('mute.') && type.endsWith('.room') && roomId) {
+    await Member.updateOne(
+      { roomId, userId: targetUserId },
+      { roomRole: 'muted', mutedUntil: expiresAt || new Date('2099-12-31') },
+    )
+  }
 
-    case 'shadow_ban':
-      // Shadow ban: user sees their own messages but others don't
-      // Handled at message distribution layer, no model change needed
-      break
+  if (type === 'ban.room' && roomId) {
+    await Member.deleteOne({ roomId, userId: targetUserId })
+  }
 
-    case 'warn':
-      // Warning is just logged — no model side effect
-      break
-
-    case 'message_removed':
-      // Handled by caller with specific messageId
-      break
+  if (type === 'ban.global' || type === 'ban.ip' || type === 'ban.fingerprint' || type === 'ban.layered') {
+    await User.updateOne({ _id: targetUserId }, { status: 'banned', bannedUntil: expiresAt })
+    await Member.deleteMany({ userId: targetUserId })
   }
 
   await logAction({
@@ -136,18 +115,17 @@ export async function executeModAction(params: ModActionParams) {
     targetType: 'user',
     roomId,
     reason,
-    metadata: { duration, expiresAt },
+    metadata: { duration, expiresAt, ipAddress: resolvedIp, fingerprintHash: resolvedFingerprint },
   })
 
   return { action }
 }
 
-export async function isUserMuted(userId: string, roomId: string): Promise<boolean> {
+export async function isUserMuted(userId: string, roomId: string, muteType?: 'text' | 'voice' | 'both'): Promise<boolean> {
   const member = await Member.findOne({ roomId, userId })
   if (!member) return false
   if (member.roomRole !== 'muted') return false
   if (member.mutedUntil && member.mutedUntil < new Date()) {
-    // Mute expired, restore to member
     await Member.updateOne({ roomId, userId }, { roomRole: 'member', mutedUntil: undefined })
     return false
   }
@@ -155,22 +133,21 @@ export async function isUserMuted(userId: string, roomId: string): Promise<boole
 }
 
 export async function isUserBanned(userId: string, roomId?: string): Promise<boolean> {
-  // Check global ban
   const user = await User.findById(userId)
-  if (!user || user.status === 'banned') {
-    if (user?.bannedUntil && user.bannedUntil < new Date()) {
+  if (!user) return true
+  if (user.status === 'banned') {
+    if (user.bannedUntil && user.bannedUntil < new Date()) {
       await User.updateOne({ _id: userId }, { status: 'active', bannedUntil: undefined })
       return false
     }
-    return user?.status === 'banned'
+    return true
   }
 
-  // Check room ban
   if (roomId) {
     const ban = await ModerationAction.findOne({
       targetUserId: userId,
       roomId,
-      type: 'ban',
+      type: 'ban.room',
       active: true,
     })
     if (ban) {
@@ -185,31 +162,52 @@ export async function isUserBanned(userId: string, roomId?: string): Promise<boo
   return false
 }
 
-export async function isShadowBanned(userId: string, roomId?: string): Promise<boolean> {
-  const query: Record<string, unknown> = {
-    targetUserId: userId,
-    type: 'shadow_ban',
+export async function isIpBanned(ip: string): Promise<boolean> {
+  if (!ip) return false
+  const ban = await ModerationAction.findOne({
+    type: { $in: ['ban.ip', 'ban.layered'] },
+    ipAddress: ip,
     active: true,
-  }
-  if (roomId) query.roomId = roomId
-  else query.roomId = { $exists: false }
-
-  const sb = await ModerationAction.findOne(query)
-  if (sb?.expiresAt && sb.expiresAt < new Date()) {
-    await ModerationAction.updateOne({ _id: sb._id }, { active: false })
+  })
+  if (!ban) return false
+  if (ban.expiresAt && ban.expiresAt < new Date()) {
+    await ModerationAction.updateOne({ _id: ban._id }, { active: false })
     return false
   }
-  return !!sb
+  return true
+}
+
+export async function isFingerprintBanned(hash: string): Promise<boolean> {
+  if (!hash) return false
+  const ban = await ModerationAction.findOne({
+    type: { $in: ['ban.fingerprint', 'ban.layered'] },
+    fingerprintHash: hash,
+    active: true,
+  })
+  if (!ban) return false
+  if (ban.expiresAt && ban.expiresAt < new Date()) {
+    await ModerationAction.updateOne({ _id: ban._id }, { active: false })
+    return false
+  }
+  return true
+}
+
+export async function isShadowBanned(userId: string, roomId?: string): Promise<boolean> {
+  // Shadow ban not in the new granular types — can be added if needed
+  return false
 }
 
 export async function deleteMessage(messageId: string, moderatorId: string, reason: string) {
   const msg = await Message.findById(messageId)
   if (!msg) return { error: 'الرسالة غير موجودة' }
 
+  const hasPerm = await hasPermission(moderatorId, 'mod.delete_message')
+  if (!hasPerm) return { error: 'لا تملك صلاحية حذف الرسائل' }
+
   await Message.updateOne({ _id: messageId }, { status: 'deleted' })
 
   await logAction({
-    actionType: 'moderation.message_removed',
+    actionType: 'moderation.message.delete',
     actorId: moderatorId,
     targetId: messageId,
     targetType: 'message',
@@ -218,4 +216,21 @@ export async function deleteMessage(messageId: string, moderatorId: string, reas
   })
 
   return { success: true, roomId: msg.roomId.toString() }
+}
+
+// Get all available mod actions for a moderator against a target
+export async function getAvailableActions(
+  moderatorId: string,
+  targetUserId: string,
+): Promise<string[]> {
+  if (moderatorId === targetUserId) return []
+
+  const canMod = await canModerateUser(moderatorId, targetUserId)
+  if (!canMod) return []
+
+  const { getUserPermissions } = await import('../roles/role.service.js')
+  const perms = await getUserPermissions(moderatorId)
+
+  // Return all mod.* permissions the moderator has
+  return perms.filter((p) => p.startsWith('mod.'))
 }

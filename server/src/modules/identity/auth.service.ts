@@ -1,26 +1,26 @@
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import { User, type IUser } from './user.model.js'
+import { Role } from '../roles/role.model.js'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
 const SALT_ROUNDS = 10
 
-// Avatar color generation
 const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6']
 
-function getAvatarColor(name: string): string {
+export function getAvatarColor(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
 }
 
-export function generateToken(userId: string, role: string): string {
-  return jwt.sign({ userId, role }, JWT_SECRET, { expiresIn: '7d' })
+export function generateToken(userId: string): string {
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' })
 }
 
-export function verifyToken(token: string): { userId: string; role: string } | null {
+export function verifyToken(token: string): { userId: string } | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as { userId: string; role: string }
+    return jwt.verify(token, JWT_SECRET) as { userId: string }
   } catch {
     return null
   }
@@ -33,19 +33,14 @@ export async function registerMember(data: {
 }): Promise<{ user?: IUser; token?: string; error?: string }> {
   const { nickname, email, password } = data
 
-  if (!nickname || nickname.length < 2 || nickname.length > 20) {
-    return { error: 'الاسم يجب أن يكون بين 2 و 20 حرف' }
-  }
-  if (!email || !email.includes('@')) {
-    return { error: 'البريد الإلكتروني غير صالح' }
-  }
-  if (!password || password.length < 6) {
-    return { error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' }
-  }
+  if (!nickname || nickname.length < 2 || nickname.length > 20) return { error: 'الاسم يجب أن يكون بين 2 و 20 حرف' }
+  if (!email || !email.includes('@')) return { error: 'البريد الإلكتروني غير صالح' }
+  if (!password || password.length < 6) return { error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' }
 
-  const existingEmail = await User.findOne({ email: email.toLowerCase() })
-  if (existingEmail) return { error: 'البريد الإلكتروني مسجل مسبقًا' }
+  const existing = await User.findOne({ email: email.toLowerCase() })
+  if (existing) return { error: 'البريد الإلكتروني مسجل مسبقًا' }
 
+  const memberRole = await Role.findOne({ name: 'member' })
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
 
   const user = await User.create({
@@ -54,71 +49,94 @@ export async function registerMember(data: {
     email: email.toLowerCase(),
     passwordHash,
     avatarColor: getAvatarColor(nickname),
-    systemRole: 'user',
-    status: 'active',
+    roles: memberRole ? [memberRole._id] : [],
+    statusText: 'عضو جديد',
     membershipPlan: 'free',
   })
 
-  const token = generateToken(user._id.toString(), 'user')
+  const token = generateToken(user._id.toString())
   return { user, token }
 }
 
-export async function loginMember(data: {
-  email: string
+// Login by email OR username
+export async function login(data: {
+  identifier: string  // email or username
   password: string
 }): Promise<{ user?: IUser; token?: string; error?: string }> {
-  const { email, password } = data
+  const { identifier, password } = data
+  if (!identifier || !password) return { error: 'بيانات الدخول مطلوبة' }
 
-  if (!email || !password) return { error: 'البريد وكلمة المرور مطلوبان' }
+  const query = identifier.includes('@')
+    ? { email: identifier.toLowerCase() }
+    : { username: identifier.toLowerCase() }
 
-  const user = await User.findOne({ email: email.toLowerCase(), type: { $in: ['member', 'admin'] } })
+  const user = await User.findOne({ ...query, type: { $in: ['member', 'staff'] } }).populate('roles')
   if (!user || !user.passwordHash) return { error: 'بيانات الدخول غير صحيحة' }
-
   if (user.status === 'banned') return { error: 'هذا الحساب محظور' }
 
   const valid = await bcrypt.compare(password, user.passwordHash)
   if (!valid) return { error: 'بيانات الدخول غير صحيحة' }
 
-  const token = generateToken(user._id.toString(), user.systemRole)
+  const token = generateToken(user._id.toString())
   return { user, token }
 }
 
-export async function createAdmin(data: {
+// Admin creates staff accounts from the control panel
+export async function createStaff(data: {
+  username: string
   nickname: string
-  email: string
   password: string
+  roleNames: string[]
+  createdBy: string
 }): Promise<{ user?: IUser; error?: string }> {
-  const { nickname, email, password } = data
+  const { username, nickname, password, roleNames, createdBy } = data
 
-  const existing = await User.findOne({ email: email.toLowerCase() })
-  if (existing) return { error: 'البريد الإلكتروني مسجل مسبقًا' }
+  if (!username || username.length < 3) return { error: 'اسم المستخدم يجب أن يكون 3 أحرف على الأقل' }
+  if (!nickname || nickname.length < 2) return { error: 'الاسم المستعار مطلوب' }
+  if (!password || password.length < 6) return { error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' }
+  if (!roleNames.length) return { error: 'يجب اختيار دور واحد على الأقل' }
+
+  const existingUsername = await User.findOne({ username: username.toLowerCase() })
+  if (existingUsername) return { error: 'اسم المستخدم مسجل مسبقًا' }
+
+  const roles = await Role.find({ name: { $in: roleNames } })
+  if (roles.length !== roleNames.length) return { error: 'بعض الأدوار غير موجودة' }
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
 
   const user = await User.create({
+    username: username.toLowerCase(),
     nickname,
-    type: 'admin',
-    email: email.toLowerCase(),
+    type: 'staff',
     passwordHash,
     avatarColor: getAvatarColor(nickname),
-    systemRole: 'admin',
-    status: 'active',
+    roles: roles.map((r) => r._id),
+    statusText: 'طاقم',
+    createdBy,
   })
 
   return { user }
 }
 
-// Seed default admin if none exists
-export async function seedAdmin() {
-  const adminCount = await User.countDocuments({ type: 'admin' })
-  if (adminCount > 0) return
+// Seed the super_admin on first run
+export async function seedSuperAdmin() {
+  const staffCount = await User.countDocuments({ type: 'staff' })
+  if (staffCount > 0) return
 
-  await createAdmin({
+  const superAdminRole = await Role.findOne({ name: 'super_admin' })
+  if (!superAdminRole) return
+
+  const passwordHash = await bcrypt.hash('admin123', SALT_ROUNDS)
+
+  await User.create({
+    username: 'admin',
     nickname: 'المسؤول',
-    email: 'admin@chat.com',
-    password: 'admin123',
+    type: 'staff',
+    passwordHash,
+    avatarColor: getAvatarColor('المسؤول'),
+    roles: [superAdminRole._id],
+    statusText: 'المسؤول الأعلى',
   })
-  console.log('Seeded default admin: admin@chat.com / admin123')
-}
 
-export { getAvatarColor }
+  console.log('Seeded super admin: username=admin / password=admin123')
+}
