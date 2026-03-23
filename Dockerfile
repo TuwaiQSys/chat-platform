@@ -1,5 +1,8 @@
 FROM node:22-slim AS base
 
+# Install libcurl for mongodb-memory-server
+RUN apt-get update && apt-get install -y libcurl4 && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy package files
