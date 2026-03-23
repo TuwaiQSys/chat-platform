@@ -49,8 +49,6 @@ function useSessionRestore() {
 
     if (!token && !sessionToken) { setRestoring(false); return }
 
-    if (!socket.connected) socket.connect()
-
     const rejoinRoom = () => {
       const lastRoomId = localStorage.getItem('lastRoomId')
       if (lastRoomId) {
@@ -67,30 +65,42 @@ function useSessionRestore() {
       }
     }
 
-    if (token) {
-      // Member/staff restore via JWT
-      fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
-        .then((r) => { if (!r.ok) throw new Error(); return r.json() })
-        .then((data) => {
-          setUser(data.user)
-          socket.emit('auth:join', { token }, (res: any) => {
-            if (res.error) { setRestoring(false); return }
-            setUser(res.user)
-            rejoinRoom()
-          })
-        }).catch(() => { localStorage.removeItem('token'); setRestoring(false) })
-    } else if (sessionToken) {
-      // Guest restore via session token
-      socket.emit('session:restore', { sessionToken }, (res: any) => {
-        if (res.error) {
-          localStorage.removeItem('sessionToken')
-          setRestoring(false)
-          return
-        }
-        setUser(res.user)
-        rejoinRoom()
-      })
+    const doRestore = () => {
+      if (token) {
+        // Member/staff restore via JWT
+        fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error(); return r.json() })
+          .then((data) => {
+            setUser(data.user)
+            socket.emit('auth:join', { token }, (res: any) => {
+              if (res.error) { setRestoring(false); return }
+              setUser(res.user)
+              rejoinRoom()
+            })
+          }).catch(() => { localStorage.removeItem('token'); setRestoring(false) })
+      } else if (sessionToken) {
+        // Guest restore via session token
+        socket.emit('session:restore', { sessionToken }, (res: any) => {
+          if (res.error) {
+            localStorage.removeItem('sessionToken')
+            setRestoring(false)
+            return
+          }
+          setUser(res.user)
+          rejoinRoom()
+        })
+      }
     }
+
+    // Wait for socket to connect before restoring
+    if (socket.connected) {
+      doRestore()
+    } else {
+      socket.connect()
+      socket.once('connect', doRestore)
+    }
+
+    return () => { socket.off('connect', doRestore) }
   }, [setUser, setCurrentRoom, setMessages, setMembers])
 
   return restoring

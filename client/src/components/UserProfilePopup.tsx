@@ -157,7 +157,7 @@ export default function UserProfilePopup({ target, roomId, onClose, onOpenDM }: 
             {target.type === 'guest' ? '(غير مسجل)' : target.type === 'staff' ? '(طاقم)' : '(عضو)'}
           </p>
           {target.statusText && <p className="text-xs text-gray-500 mt-1">{target.statusText}</p>}
-          {target.lastIp && <p className="text-[10px] text-gray-400 mt-1 font-mono" dir="ltr">IP: {target.lastIp}</p>}
+          {target.lastIp && userPerms.includes('mod.inspect_ip') && <p className="text-[10px] text-gray-400 mt-1 font-mono" dir="ltr">IP: {target.lastIp}</p>}
         </div>
 
         {/* Quick actions */}
@@ -165,9 +165,11 @@ export default function UserProfilePopup({ target, roomId, onClose, onOpenDM }: 
           <button onClick={() => { onOpenDM(target); onClose() }} className="flex-1 py-2.5 text-xs font-bold text-blue-600 hover:bg-blue-50 border-l border-gray-200">
             محادثة خاصة
           </button>
-          <button onClick={() => { setActiveAction('warn'); }} className="flex-1 py-2.5 text-xs font-bold text-yellow-600 hover:bg-yellow-50 border-l border-gray-200">
-            تنبيه
-          </button>
+          {hasMod && (
+            <button onClick={() => { setActiveAction('warn'); }} className="flex-1 py-2.5 text-xs font-bold text-yellow-600 hover:bg-yellow-50 border-l border-gray-200">
+              تنبيه
+            </button>
+          )}
           <button onClick={onClose} className="flex-1 py-2.5 text-xs font-bold text-gray-500 hover:bg-gray-50">
             تجاهل
           </button>
