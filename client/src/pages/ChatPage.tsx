@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { socket } from '@/lib/socket'
 import { useStore, type ChatMessage, type ChatUser } from '@/hooks/useStore'
-import UserActionMenu from '@/components/UserActionMenu'
+import UserProfilePopup from '@/components/UserProfilePopup'
 
 interface ChatColors { normal: string; system: string; admin: string; broadcast: string; private: string }
 interface DMWindow { userId: string; nickname: string; avatar: string; messages: any[]; minimized: boolean }
@@ -15,7 +15,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
-  const [actionMenu, setActionMenu] = useState<{ target: ChatUser; position: { x: number; y: number } } | null>(null)
+  // actionMenu removed — using UserProfilePopup now
   const [selectedUser, setSelectedUser] = useState<ChatUser | null>(null)
   const [rightTab, setRightTab] = useState<'members' | 'rooms' | 'settings'>('members')
   const [colors, setColors] = useState<ChatColors>({ normal: '#fefce8', system: '#dbeafe', admin: '#fce7f3', broadcast: '#dcfce7', private: '#f3e8ff' })
@@ -82,6 +82,7 @@ export default function ChatPage() {
     socket.emit('room:join', { roomId }, (res: any) => {
       if (res.error) return showToast(res.error)
       setCurrentRoom(res.room); setMessages(res.messages); setMembers(res.members)
+      localStorage.setItem('lastRoomId', roomId)
       setRightTab('members')
     })
   }
@@ -133,15 +134,6 @@ export default function ChatPage() {
     socket.emit('dm:send', { targetUserId, content }, (res: any) => {
       if (res.error) return showToast(res.error)
       setDmInput(prev => ({ ...prev, [targetUserId]: '' }))
-    })
-  }
-
-  const doModAction = (action: string, target?: ChatUser) => {
-    const t = target || selectedUser
-    if (!t || !currentRoom) return
-    const reason = prompt('السبب:') || 'مخالفة'
-    socket.emit('mod:action', { action, targetUserId: t.id, roomId: currentRoom.id, reason, duration: 15 }, (res: any) => {
-      if (res.error) showToast(res.error); else showToast('تم تنفيذ الإجراء')
     })
   }
 
@@ -252,21 +244,7 @@ export default function ChatPage() {
                   className="rounded bg-[#3b82f6] px-4 py-2 text-sm font-bold text-white hover:bg-[#2563eb] disabled:opacity-40">إرسال</button>
               </div>
 
-              {/* Mod bar */}
-              {hasMod && selectedUser && selectedUser.id !== user?.id && (
-                <div className="flex flex-wrap gap-1 px-2 pb-2 animate-fade-in">
-                  <span className="text-[11px] text-gray-500 self-center ml-2">{selectedUser.nickname}:</span>
-                  {userPerms.includes('mod.kick.room') && <button onClick={() => doModAction('kick.room')} className="rounded bg-orange-500 px-2 py-0.5 text-[10px] text-white">طرد</button>}
-                  {userPerms.includes('mod.mute.text.room') && <button onClick={() => doModAction('mute.text.room')} className="rounded bg-yellow-500 px-2 py-0.5 text-[10px] text-white">كتم</button>}
-                  {userPerms.includes('mod.ban.room') && <button onClick={() => doModAction('ban.room')} className="rounded bg-red-500 px-2 py-0.5 text-[10px] text-white">حظر غرفة</button>}
-                  {userPerms.includes('mod.ban.global') && <button onClick={() => doModAction('ban.global')} className="rounded bg-red-700 px-2 py-0.5 text-[10px] text-white">حظر شامل</button>}
-                  {userPerms.includes('mod.ban.ip') && <button onClick={() => doModAction('ban.ip')} className="rounded bg-red-900 px-2 py-0.5 text-[10px] text-white">حظر IP</button>}
-                  {userPerms.includes('mod.ban.layered') && <button onClick={() => doModAction('ban.layered')} className="rounded bg-purple-800 px-2 py-0.5 text-[10px] text-white">حظر طبقات</button>}
-                  {userPerms.includes('mod.delete_message') && <button onClick={() => doModAction('warn')} className="rounded bg-gray-500 px-2 py-0.5 text-[10px] text-white">تحذير</button>}
-                  <button onClick={() => openDM(selectedUser)} className="rounded bg-blue-500 px-2 py-0.5 text-[10px] text-white">خاص</button>
-                  <button onClick={() => setSelectedUser(null)} className="rounded bg-gray-300 px-2 py-0.5 text-[10px] text-gray-600">✕</button>
-                </div>
-              )}
+              {/* Mod actions now in UserProfilePopup — click username to open */}
             </div>
           )}
 
@@ -392,9 +370,14 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Action menu */}
-      {actionMenu && currentRoom && (
-        <UserActionMenu target={actionMenu.target} roomId={currentRoom.id} position={actionMenu.position} onClose={() => setActionMenu(null)} />
+      {/* User profile popup */}
+      {selectedUser && selectedUser.id !== user?.id && (
+        <UserProfilePopup
+          target={selectedUser}
+          roomId={currentRoom?.id}
+          onClose={() => setSelectedUser(null)}
+          onOpenDM={openDM}
+        />
       )}
     </div>
   )

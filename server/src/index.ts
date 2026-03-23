@@ -31,6 +31,8 @@ import adminRoutes from './modules/identity/admin.routes.js'
 import antiAbuseRoutes from './modules/anti-abuse/anti-abuse.routes.js'
 import chatConfigRoutes from './modules/messages/chat-config.routes.js'
 import { getChatConfig } from './modules/messages/chat-config.model.js'
+import dmRoutes from './modules/messages/dm.routes.js'
+import { getOrCreateThread, DMMessage, DMThread } from './modules/messages/dm.model.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -47,6 +49,8 @@ app.use('/api/auth', authRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/admin/anti-abuse', antiAbuseRoutes)
 app.use('/api/admin/chat-config', chatConfigRoutes)
+
+app.use('/api/dm', dmRoutes)
 
 // Public chat config (clients need message colors, shortcuts, emoji)
 app.get('/api/chat-config', async (_req, res) => {
@@ -609,28 +613,36 @@ io.on('connection', (socket) => {
       const content = data.content?.trim()
       if (!content || content.length > 500) return callback?.({ error: 'الرسالة غير صالحة' })
 
-      if (!await hasPermission(currentUserId, 'chat.send_private_messages')) {
-        return callback?.({ error: 'الرسائل الخاصة تتطلب صلاحية' })
-      }
-
+      // DM is available to all users by default (permission only restricts if explicitly denied)
       const socketUser = socketToUser.get(socket.id)
-      const targetEntry = [...socketToUser.entries()].find(([, u]) => u.id === data.targetUserId)
-      if (!targetEntry) return callback?.({ error: 'المستخدم غير متصل' })
+
+      // Store in MongoDB
+      const thread = await getOrCreateThread(currentUserId, data.targetUserId)
+      const msg = await DMMessage.create({
+        threadId: thread._id,
+        senderId: currentUserId,
+        content,
+      })
+      await DMThread.updateOne({ _id: thread._id }, { lastMessage: content, lastMessageAt: new Date() })
 
       const dmPayload = {
-        id: crypto.randomBytes(12).toString('hex'),
+        id: msg._id.toString(),
+        threadId: thread._id.toString(),
         senderId: currentUserId,
         senderName: socketUser?.nickname || '',
         senderAvatar: socketUser?.avatar || '',
         senderRoleColor: socketUser?.roleColor || null,
-        senderRoleBadge: socketUser?.roleBadge || null,
         content,
-        createdAt: Date.now(),
+        createdAt: msg.createdAt.getTime(),
       }
 
-      io.sockets.sockets.get(targetEntry[0])?.emit('dm:receive', dmPayload)
-      socket.emit('dm:sent', { ...dmPayload, targetUserId: data.targetUserId })
-      callback?.({ success: true })
+      // Deliver to target if online
+      const targetEntry = [...socketToUser.entries()].find(([, u]) => u.id === data.targetUserId)
+      if (targetEntry) {
+        io.sockets.sockets.get(targetEntry[0])?.emit('dm:receive', dmPayload)
+      }
+
+      callback?.({ success: true, message: dmPayload })
     } catch {
       callback?.({ error: 'حدث خطأ' })
     }

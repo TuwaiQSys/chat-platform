@@ -38,6 +38,7 @@ export default function EntryPage() {
       sock.emit('room:join', { roomId: room.id }, (res: any) => {
         if (res.error) return navigate('/chat')
         setCurrentRoom(res.room)
+        localStorage.setItem('lastRoomId', room.id)
         setMessages(res.messages)
         setMembers(res.members)
         navigate('/chat')

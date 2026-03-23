@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useStore } from './hooks/useStore'
 import { useSocket } from './hooks/useSocket'
+import { socket } from './lib/socket'
 import EntryPage from './pages/EntryPage'
 import ChatPage from './pages/ChatPage'
 import AdminLayout from './pages/admin/AdminLayout'
@@ -33,8 +35,74 @@ function RequireGuest({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// Restore session from token on app load
+function useSessionRestore() {
+  const [restoring, setRestoring] = useState(true)
+  const setUser = useStore((s) => s.setUser)
+  const setCurrentRoom = useStore((s) => s.setCurrentRoom)
+  const setMessages = useStore((s) => s.setMessages)
+  const setMembers = useStore((s) => s.setMembers)
+
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (!token) { setRestoring(false); return }
+
+    // Validate token with server
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => { if (!r.ok) throw new Error(); return r.json() })
+      .then((data) => {
+        // Restore user state
+        setUser(data.user)
+
+        // Reconnect socket
+        if (!socket.connected) socket.connect()
+        socket.emit('auth:join', { token }, (res: any) => {
+          if (res.error) { setRestoring(false); return }
+
+          // Update user with socket data (permissions, role display)
+          setUser(res.user)
+
+          // Rejoin last room
+          const lastRoomId = localStorage.getItem('lastRoomId')
+          if (lastRoomId) {
+            socket.emit('room:join', { roomId: lastRoomId }, (roomRes: any) => {
+              if (!roomRes.error) {
+                setCurrentRoom(roomRes.room)
+                setMessages(roomRes.messages)
+                setMembers(roomRes.members)
+              }
+              setRestoring(false)
+            })
+          } else {
+            setRestoring(false)
+          }
+        })
+      })
+      .catch(() => {
+        localStorage.removeItem('token')
+        localStorage.removeItem('lastRoomId')
+        setRestoring(false)
+      })
+  }, [setUser, setCurrentRoom, setMessages, setMembers])
+
+  return restoring
+}
+
 export default function App() {
   useSocket()
+  const restoring = useSessionRestore()
+
+  // Show loading while restoring session
+  if (restoring) {
+    return (
+      <div className="flex h-full items-center justify-center bg-[#e5e7eb]">
+        <div className="text-center">
+          <div className="mb-3 h-8 w-8 mx-auto animate-spin rounded-full border-3 border-gray-300 border-t-blue-500" />
+          <p className="text-sm text-gray-500">جاري تحميل الجلسة...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <Routes>
