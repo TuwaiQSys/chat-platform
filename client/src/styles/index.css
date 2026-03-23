@@ -3,49 +3,26 @@
 @tailwind utilities;
 
 @layer base {
-  * {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
-
-  html {
-    direction: rtl;
-  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { direction: rtl; }
 
   body {
     font-family: 'Tajawal', 'Inter', system-ui, sans-serif;
-    background: #4a5568;
+    background: #e5e7eb;
     color: #1a202c;
     overflow: hidden;
     height: 100dvh;
   }
 
-  #root {
-    height: 100dvh;
-    display: flex;
-    flex-direction: column;
-  }
+  #root { height: 100dvh; display: flex; flex-direction: column; }
 
-  ::-webkit-scrollbar {
-    width: 5px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: #e2e8f0;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: #a0aec0;
-    border-radius: 3px;
-  }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
 
-.animate-fade-in {
-  animation: fadeIn 0.2s ease-out forwards;
-}
+.animate-fade-in { animation: fadeIn 0.2s ease-out forwards; }
+.animate-slide-in { animation: slideIn 0.2s ease-out forwards; }
