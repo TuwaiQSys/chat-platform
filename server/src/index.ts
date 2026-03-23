@@ -713,7 +713,7 @@ io.on('connection', (socket) => {
 // --- Serve client build in production ---
 const clientBuildPath = path.join(__dirname, '../../client/dist')
 app.use(express.static(clientBuildPath))
-app.get('*', (_req, res, next) => {
+app.get('{*path}', (_req, res, next) => {
   // Don't serve index.html for API routes
   if (_req.path.startsWith('/api') || _req.path.startsWith('/socket.io')) return next()
   res.sendFile(path.join(clientBuildPath, 'index.html'))

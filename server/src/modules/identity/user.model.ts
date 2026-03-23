@@ -32,7 +32,6 @@ const UserSchema = new Schema<IUser>(
 )
 
 UserSchema.index({ nickname: 1 })
-UserSchema.index({ email: 1 })
 UserSchema.index({ status: 1 })
 UserSchema.index({ type: 1 })
 
