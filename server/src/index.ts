@@ -13,6 +13,10 @@ import { Message } from './modules/messages/message.model.js'
 import { seedRooms } from './modules/rooms/seed.js'
 import { executeModAction, isUserMuted, isUserBanned, isShadowBanned, deleteMessage, canModerate } from './modules/moderation/moderation.service.js'
 import { recordFingerprint, type ClientSignals } from './modules/anti-abuse/fingerprint.service.js'
+import { seedAdmin, getAvatarColor, verifyToken } from './modules/identity/auth.service.js'
+import { seedPlans } from './modules/identity/membership-plan.model.js'
+import authRoutes from './modules/identity/auth.routes.js'
+import adminRoutes from './modules/identity/admin.routes.js'
 import { logAction } from './modules/audit/audit.service.js'
 import { checkRateLimit } from './middleware/rate-limiter.js'
 
@@ -26,14 +30,9 @@ const io = new Server(httpServer, {
 app.use(cors())
 app.use(express.json())
 
-// --- Avatar color generation ---
-const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6']
-
-function getAvatarColor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
-}
+// --- Routes ---
+app.use('/api/auth', authRoutes)
+app.use('/api/admin', adminRoutes)
 
 // --- In-memory socket → user mapping ---
 const socketToUser = new Map<string, { id: string; nickname: string; avatar: string; currentRoom: string | null }>()
@@ -176,6 +175,51 @@ io.on('connection', (socket) => {
       io.emit('users:count', getOnlineCount())
     } catch (err) {
       console.error('guest:join error:', err)
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  // Authenticated join (member/admin with JWT token)
+  socket.on('auth:join', async (data: { token: string }, callback) => {
+    try {
+      const payload = verifyToken(data.token)
+      if (!payload) return callback?.({ error: 'جلسة منتهية' })
+
+      const user = await User.findById(payload.userId)
+      if (!user || user.status !== 'active') return callback?.({ error: 'الحساب غير متاح' })
+
+      // Check duplicate
+      for (const u of socketToUser.values()) {
+        if (u.id === user._id.toString()) return callback?.({ error: 'أنت متصل بالفعل' })
+      }
+
+      const ip = (socket.handshake.headers['x-forwarded-for'] as string || socket.handshake.address || '').split(',')[0].trim()
+
+      await Session.create({
+        userId: user._id,
+        socketId: socket.id,
+        token: data.token,
+        ipAddress: ip,
+        userAgent: socket.handshake.headers['user-agent'] || '',
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      })
+
+      currentUserId = user._id.toString()
+      socketToUser.set(socket.id, { id: currentUserId, nickname: user.nickname, avatar: user.avatarColor, currentRoom: null })
+
+      callback?.({
+        user: {
+          id: currentUserId,
+          nickname: user.nickname,
+          avatar: user.avatarColor,
+          type: user.type,
+          systemRole: user.systemRole,
+          membershipPlan: user.membershipPlan,
+        },
+      })
+      io.emit('users:count', getOnlineCount())
+    } catch (err) {
+      console.error('auth:join error:', err)
       callback?.({ error: 'حدث خطأ' })
     }
   })
@@ -497,6 +541,8 @@ const PORT = parseInt(process.env.PORT || '3001')
 async function start() {
   await connectDB()
   await seedRooms()
+  await seedAdmin()
+  await seedPlans()
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)

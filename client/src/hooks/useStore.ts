@@ -4,7 +4,9 @@ export interface ChatUser {
   id: string
   nickname: string
   avatar: string
+  type?: 'guest' | 'member' | 'admin'
   systemRole?: string
+  membershipPlan?: string
 }
 
 export interface ChatRoom {
