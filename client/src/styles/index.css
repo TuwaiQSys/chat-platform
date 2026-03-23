@@ -15,8 +15,8 @@
 
   body {
     font-family: 'Tajawal', 'Inter', system-ui, sans-serif;
-    background: #0a0a12;
-    color: #e2e8f0;
+    background: #4a5568;
+    color: #1a202c;
     overflow: hidden;
     height: 100dvh;
   }
@@ -28,83 +28,24 @@
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
+    width: 5px;
   }
 
   ::-webkit-scrollbar-track {
-    background: transparent;
+    background: #e2e8f0;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
+    background: #a0aec0;
     border-radius: 3px;
   }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
-  }
 }
 
-@layer components {
-  .glass {
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .glass-hover:hover {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-
-  .glow-subtle {
-    box-shadow: 0 0 20px rgba(99, 102, 241, 0.08);
-  }
-
-  .input-dark {
-    @apply w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3
-           text-white placeholder:text-white/30
-           focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/30
-           transition-all duration-200;
-  }
-
-  .btn-primary {
-    @apply rounded-xl bg-indigo-600 px-6 py-3 font-semibold text-white
-           hover:bg-indigo-500 active:scale-[0.98]
-           transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed;
-  }
-
-  .btn-ghost {
-    @apply rounded-xl px-4 py-2 text-white/60
-           hover:bg-white/5 hover:text-white/80
-           transition-all duration-200;
-  }
-
-  .badge-online {
-    @apply inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-400;
-  }
-}
-
-/* Animations */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes slideInRight {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.3s ease-out forwards;
-}
-
-.animate-slide-in {
-  animation: slideInRight 0.25s ease-out forwards;
+  animation: fadeIn 0.2s ease-out forwards;
 }

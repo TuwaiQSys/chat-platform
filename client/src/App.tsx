@@ -2,8 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { useStore } from './hooks/useStore'
 import { useSocket } from './hooks/useSocket'
 import EntryPage from './pages/EntryPage'
-import LobbyPage from './pages/LobbyPage'
-import ChatRoomPage from './pages/ChatRoomPage'
+import ChatPage from './pages/ChatPage'
 import AdminLayout from './pages/admin/AdminLayout'
 import DashboardPage from './pages/admin/DashboardPage'
 import UsersPage from './pages/admin/UsersPage'
@@ -22,7 +21,7 @@ function RequireGuest({ children }: { children: React.ReactNode }) {
   const user = useStore((s) => s.user)
   if (user) {
     if ((user as any).type === 'admin') return <Navigate to="/admin" replace />
-    return <Navigate to="/lobby" replace />
+    return <Navigate to="/chat" replace />
   }
   return <>{children}</>
 }
@@ -32,14 +31,10 @@ export default function App() {
 
   return (
     <Routes>
-      {/* Public */}
       <Route path="/" element={<RequireGuest><EntryPage /></RequireGuest>} />
+      <Route path="/chat" element={<RequireAuth><ChatPage /></RequireAuth>} />
 
-      {/* Chat (guest + member) */}
-      <Route path="/lobby" element={<RequireAuth><LobbyPage /></RequireAuth>} />
-      <Route path="/room/:roomId" element={<RequireAuth><ChatRoomPage /></RequireAuth>} />
-
-      {/* Admin panel */}
+      {/* Admin */}
       <Route path="/admin" element={<RequireAuth><AdminLayout /></RequireAuth>}>
         <Route index element={<DashboardPage />} />
         <Route path="users" element={<UsersPage />} />
@@ -48,6 +43,9 @@ export default function App() {
         <Route path="memberships" element={<MembershipsPage />} />
         <Route path="audit" element={<AuditPage />} />
       </Route>
+
+      {/* Catch all */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
