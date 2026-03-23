@@ -45,44 +45,52 @@ function useSessionRestore() {
 
   useEffect(() => {
     const token = localStorage.getItem('token')
-    if (!token) { setRestoring(false); return }
+    const sessionToken = localStorage.getItem('sessionToken')
 
-    // Validate token with server
-    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => { if (!r.ok) throw new Error(); return r.json() })
-      .then((data) => {
-        // Restore user state
-        setUser(data.user)
+    if (!token && !sessionToken) { setRestoring(false); return }
 
-        // Reconnect socket
-        if (!socket.connected) socket.connect()
-        socket.emit('auth:join', { token }, (res: any) => {
-          if (res.error) { setRestoring(false); return }
+    if (!socket.connected) socket.connect()
 
-          // Update user with socket data (permissions, role display)
-          setUser(res.user)
-
-          // Rejoin last room
-          const lastRoomId = localStorage.getItem('lastRoomId')
-          if (lastRoomId) {
-            socket.emit('room:join', { roomId: lastRoomId }, (roomRes: any) => {
-              if (!roomRes.error) {
-                setCurrentRoom(roomRes.room)
-                setMessages(roomRes.messages)
-                setMembers(roomRes.members)
-              }
-              setRestoring(false)
-            })
-          } else {
-            setRestoring(false)
+    const rejoinRoom = () => {
+      const lastRoomId = localStorage.getItem('lastRoomId')
+      if (lastRoomId) {
+        socket.emit('room:join', { roomId: lastRoomId }, (roomRes: any) => {
+          if (!roomRes.error) {
+            setCurrentRoom(roomRes.room)
+            setMessages(roomRes.messages)
+            setMembers(roomRes.members)
           }
+          setRestoring(false)
         })
-      })
-      .catch(() => {
-        localStorage.removeItem('token')
-        localStorage.removeItem('lastRoomId')
+      } else {
         setRestoring(false)
+      }
+    }
+
+    if (token) {
+      // Member/staff restore via JWT
+      fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json() })
+        .then((data) => {
+          setUser(data.user)
+          socket.emit('auth:join', { token }, (res: any) => {
+            if (res.error) { setRestoring(false); return }
+            setUser(res.user)
+            rejoinRoom()
+          })
+        }).catch(() => { localStorage.removeItem('token'); setRestoring(false) })
+    } else if (sessionToken) {
+      // Guest restore via session token
+      socket.emit('session:restore', { sessionToken }, (res: any) => {
+        if (res.error) {
+          localStorage.removeItem('sessionToken')
+          setRestoring(false)
+          return
+        }
+        setUser(res.user)
+        rejoinRoom()
       })
+    }
   }, [setUser, setCurrentRoom, setMessages, setMembers])
 
   return restoring

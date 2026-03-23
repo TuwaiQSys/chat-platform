@@ -157,7 +157,7 @@ export default function ChatPage() {
   }
 
   const handleLogout = () => {
-    localStorage.removeItem('token'); localStorage.removeItem('lastRoomId')
+    localStorage.removeItem('token'); localStorage.removeItem('sessionToken'); localStorage.removeItem('lastRoomId')
     socket.disconnect(); setUser(null); setCurrentRoom(null); setMessages([]); setMembers([])
     navigate('/')
   }
@@ -194,8 +194,8 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Main: messages LEFT, panel RIGHT */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* Main: messages LEFT, panel RIGHT — use dir=ltr to force layout order */}
+      <div className="flex flex-1 overflow-hidden" dir="ltr">
         {/* === LEFT: MESSAGES (dir=rtl for Arabic text, messages stack top-down) === */}
         <div className="flex flex-1 flex-col">
           <div className="flex-1 overflow-y-auto" style={{ background: colors.normal }}>

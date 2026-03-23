@@ -252,10 +252,11 @@ io.on('connection', (socket) => {
         lastUserAgent: socket.handshake.headers['user-agent'] || '',
       })
 
+      const sessionToken = crypto.randomBytes(24).toString('hex')
       await Session.create({
         userId: user._id,
         socketId: socket.id,
-        token: crypto.randomBytes(24).toString('hex'),
+        token: sessionToken,
         ipAddress: ip,
         userAgent: socket.handshake.headers['user-agent'] || '',
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -284,6 +285,7 @@ io.on('connection', (socket) => {
 
       callback?.({
         user: { id: currentUserId, nickname, avatar: avatarColor, type: 'guest', permissions, roleColor: null, roleBadge: null },
+        sessionToken,
       })
       io.emit('users:count', getOnlineCount())
     } catch (err) {
@@ -349,6 +351,48 @@ io.on('connection', (socket) => {
   })
 
   // === ONLINE USERS LIST ===
+  // === SESSION RESTORE (for guests and members after refresh) ===
+  socket.on('session:restore', async (data: { sessionToken: string }, callback) => {
+    try {
+      const session = await Session.findOne({ token: data.sessionToken })
+      if (!session) return callback?.({ error: 'جلسة منتهية' })
+
+      const user = await User.findById(session.userId).populate('roles')
+      if (!user || user.status !== 'active') return callback?.({ error: 'الحساب غير متاح' })
+
+      // Check if already connected
+      for (const u of socketToUser.values()) {
+        if (u.id === user._id.toString()) return callback?.({ error: 'أنت متصل بالفعل' })
+      }
+
+      // Update session with new socket
+      await Session.updateOne({ _id: session._id }, { socketId: socket.id })
+
+      const permissions = await getUserPermissions(user._id.toString())
+      const display = await getUserRoleDisplay(user._id.toString())
+
+      currentUserId = user._id.toString()
+      socketToUser.set(socket.id, {
+        id: currentUserId, nickname: user.nickname, avatar: user.avatarColor, currentRoom: null,
+        permissions, roleColor: display.color, roleBadge: display.badge,
+        visibility: user.visibility || 'visible', type: user.type,
+        lastIp: user.lastIp || '',
+      })
+
+      callback?.({
+        user: {
+          id: currentUserId, nickname: user.nickname, avatar: user.avatarColor,
+          type: user.type, permissions, roleColor: display.color, roleBadge: display.badge,
+          visibility: user.visibility, roleName: display.roleName,
+        },
+      })
+      io.emit('users:count', getOnlineCount())
+    } catch (err) {
+      console.error('session:restore error:', err)
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
   socket.on('users:list', (_, callback) => {
     const socketUser = socketToUser.get(socket.id)
     const perms = socketUser?.permissions || []

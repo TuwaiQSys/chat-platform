@@ -56,6 +56,8 @@ export default function EntryPage() {
 
     socket.emit('guest:join', { nickname: trimmed, signals }, (res: any) => {
       if (res.error) { setLoading(false); return setError(res.error) }
+      // Save session token for guest restore on refresh
+      if (res.sessionToken) localStorage.setItem('sessionToken', res.sessionToken)
       setUser(res.user)
       joinGeneralRoom(socket)
     })
