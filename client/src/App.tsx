@@ -5,15 +5,26 @@ import EntryPage from './pages/EntryPage'
 import LobbyPage from './pages/LobbyPage'
 import ChatRoomPage from './pages/ChatRoomPage'
 
-export default function App() {
+function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useStore((s) => s.user)
+  if (!user) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
+function RequireGuest({ children }: { children: React.ReactNode }) {
+  const user = useStore((s) => s.user)
+  if (user) return <Navigate to="/lobby" replace />
+  return <>{children}</>
+}
+
+export default function App() {
   useSocket()
 
   return (
     <Routes>
-      <Route path="/" element={user ? <Navigate to="/lobby" replace /> : <EntryPage />} />
-      <Route path="/lobby" element={user ? <LobbyPage /> : <Navigate to="/" replace />} />
-      <Route path="/room/:roomId" element={user ? <ChatRoomPage /> : <Navigate to="/" replace />} />
+      <Route path="/" element={<RequireGuest><EntryPage /></RequireGuest>} />
+      <Route path="/lobby" element={<RequireAuth><LobbyPage /></RequireAuth>} />
+      <Route path="/room/:roomId" element={<RequireAuth><ChatRoomPage /></RequireAuth>} />
     </Routes>
   )
 }
