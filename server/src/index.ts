@@ -32,6 +32,7 @@ import antiAbuseRoutes from './modules/anti-abuse/anti-abuse.routes.js'
 import chatConfigRoutes from './modules/messages/chat-config.routes.js'
 import { getChatConfig } from './modules/messages/chat-config.model.js'
 import dmRoutes from './modules/messages/dm.routes.js'
+import avatarRoutes from './modules/identity/avatar.routes.js'
 import { getOrCreateThread, DMMessage, DMThread } from './modules/messages/dm.model.js'
 
 const app = express()
@@ -51,6 +52,8 @@ app.use('/api/admin/anti-abuse', antiAbuseRoutes)
 app.use('/api/admin/chat-config', chatConfigRoutes)
 
 app.use('/api/dm', dmRoutes)
+app.use('/api/avatar', avatarRoutes)
+app.use('/uploads', express.static(path.join(__dirname, '../../uploads')))
 
 // Public chat config (clients need message colors, shortcuts, emoji)
 app.get('/api/chat-config', async (_req, res) => {
