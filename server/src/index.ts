@@ -2,7 +2,19 @@ import express from 'express'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
-import { nanoid } from 'nanoid'
+import crypto from 'crypto'
+
+import { connectDB, dbConnected } from './config/db.js'
+import { User } from './modules/identity/user.model.js'
+import { Session } from './modules/identity/session.model.js'
+import { Room } from './modules/rooms/room.model.js'
+import { Member } from './modules/rooms/member.model.js'
+import { Message } from './modules/messages/message.model.js'
+import { seedRooms } from './modules/rooms/seed.js'
+import { executeModAction, isUserMuted, isUserBanned, isShadowBanned, deleteMessage, canModerate } from './modules/moderation/moderation.service.js'
+import { recordFingerprint, type ClientSignals } from './modules/anti-abuse/fingerprint.service.js'
+import { logAction } from './modules/audit/audit.service.js'
+import { checkRateLimit } from './middleware/rate-limiter.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -14,293 +26,484 @@ const io = new Server(httpServer, {
 app.use(cors())
 app.use(express.json())
 
-// --- In-memory state (will be replaced by MongoDB) ---
-
-interface User {
-  id: string
-  nickname: string
-  avatar: string
-  socketId: string
-  currentRoom: string | null
-  systemRole: 'user' | 'moderator' | 'admin'
-  status: string
-  joinedAt: number
-}
-
-interface Room {
-  id: string
-  name: string
-  description: string
-  type: 'text' | 'voice' | 'hybrid'
-  maxMembers: number
-  members: Set<string>
-  createdBy: string
-  createdAt: number
-  coverImage: string | null
-  featured: boolean
-}
-
-interface Message {
-  id: string
-  roomId: string
-  senderId: string
-  senderName: string
-  senderAvatar: string
-  type: 'text' | 'system' | 'media'
-  content: string
-  createdAt: number
-}
-
-const users = new Map<string, User>()
-const rooms = new Map<string, Room>()
-const messages = new Map<string, Message[]>()
-
-// Seed default rooms
-const defaultRooms: Omit<Room, 'members'>[] = [
-  { id: 'general-1', name: 'الغرفة العامة (1)', description: 'غرفة عامة للجميع', type: 'text', maxMembers: 40, createdBy: 'system', createdAt: Date.now(), coverImage: null, featured: true },
-  { id: 'general-2', name: 'الغرفة العامة (2)', description: 'غرفة عامة للجميع', type: 'text', maxMembers: 40, createdBy: 'system', createdAt: Date.now(), coverImage: null, featured: false },
-  { id: 'general-3', name: 'الغرفة العامة (3)', description: 'غرفة عامة للجميع', type: 'text', maxMembers: 30, createdBy: 'system', createdAt: Date.now(), coverImage: null, featured: false },
-  { id: 'chill', name: 'استراحة', description: 'غرفة للاسترخاء والدردشة', type: 'text', maxMembers: 20, createdBy: 'system', createdAt: Date.now(), coverImage: null, featured: false },
-  { id: 'gaming', name: 'قيمرز', description: 'غرفة الألعاب', type: 'text', maxMembers: 30, createdBy: 'system', createdAt: Date.now(), coverImage: null, featured: false },
-]
-
-for (const r of defaultRooms) {
-  rooms.set(r.id, { ...r, members: new Set() })
-  messages.set(r.id, [])
-}
-
-// Avatar generation
-const avatarColors = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6']
+// --- Avatar color generation ---
+const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6']
 
 function getAvatarColor(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  return avatarColors[Math.abs(hash) % avatarColors.length]
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
+}
+
+// --- In-memory socket → user mapping ---
+const socketToUser = new Map<string, { id: string; nickname: string; avatar: string; currentRoom: string | null }>()
+
+// --- Helper: get online count ---
+function getOnlineCount(): number {
+  return socketToUser.size
+}
+
+// --- Helper: get room member list ---
+async function getRoomMembersForClient(roomId: string) {
+  const members = await Member.find({ roomId }).populate('userId', 'nickname avatarColor systemRole')
+  return members
+    .filter((m) => m.userId)
+    .map((m) => {
+      const u = m.userId as any
+      return {
+        id: u._id.toString(),
+        nickname: u.nickname,
+        avatar: u.avatarColor,
+        systemRole: u.systemRole,
+        roomRole: m.roomRole,
+      }
+    })
+}
+
+// --- Helper: get room list for client ---
+async function getRoomListForClient() {
+  const rooms = await Room.find({ status: 'active' })
+  const roomIds = rooms.map((r) => r._id)
+  const memberCounts = await Member.aggregate([
+    { $match: { roomId: { $in: roomIds } } },
+    { $group: { _id: '$roomId', count: { $sum: 1 } } },
+  ])
+  const countMap = new Map(memberCounts.map((c) => [c._id.toString(), c.count]))
+
+  return rooms.map((r) => ({
+    id: r._id.toString(),
+    name: r.name,
+    description: r.description,
+    type: r.type,
+    maxMembers: r.config.maxMembers,
+    memberCount: countMap.get(r._id.toString()) || 0,
+    featured: r.featured,
+    coverImage: r.coverImage || null,
+  }))
+}
+
+// --- Helper: create system message ---
+async function createSystemMessage(roomId: string, content: string) {
+  const msg = await Message.create({
+    roomId,
+    senderId: 'system',
+    senderName: 'النظام',
+    senderAvatar: '',
+    type: 'system',
+    content,
+    status: 'visible',
+  })
+  return {
+    id: msg._id.toString(),
+    roomId: roomId.toString(),
+    senderId: 'system',
+    senderName: 'النظام',
+    senderAvatar: '',
+    type: 'system' as const,
+    content,
+    createdAt: msg.createdAt.getTime(),
+  }
 }
 
 // --- REST API ---
 
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', users: users.size, rooms: rooms.size })
+app.get('/api/health', async (_req, res) => {
+  const userCount = await User.countDocuments()
+  const roomCount = await Room.countDocuments()
+  res.json({ status: 'ok', users: userCount, online: getOnlineCount(), rooms: roomCount })
 })
 
-app.get('/api/rooms', (_req, res) => {
-  const roomList = Array.from(rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    type: r.type,
-    maxMembers: r.maxMembers,
-    memberCount: r.members.size,
-    featured: r.featured,
-    coverImage: r.coverImage,
-  }))
-  res.json({ rooms: roomList, totalOnline: users.size })
+app.get('/api/rooms', async (_req, res) => {
+  const rooms = await getRoomListForClient()
+  res.json({ rooms, totalOnline: getOnlineCount() })
 })
 
 // --- Socket.IO ---
 
 io.on('connection', (socket) => {
-  let currentUser: User | null = null
+  let currentUserId: string | null = null
 
-  socket.on('guest:join', (data: { nickname: string }, callback) => {
-    const nickname = data.nickname?.trim()
-    if (!nickname || nickname.length < 2 || nickname.length > 20) {
-      return callback?.({ error: 'الاسم يجب أن يكون بين 2 و 20 حرف' })
-    }
-
-    // Check duplicate nickname
-    for (const u of users.values()) {
-      if (u.nickname === nickname) {
-        return callback?.({ error: 'هذا الاسم مستخدم بالفعل' })
+  socket.on('guest:join', async (data: { nickname: string; signals?: ClientSignals }, callback) => {
+    try {
+      const nickname = data.nickname?.trim()
+      if (!nickname || nickname.length < 2 || nickname.length > 20) {
+        return callback?.({ error: 'الاسم يجب أن يكون بين 2 و 20 حرف' })
       }
-    }
 
-    const user: User = {
-      id: nanoid(12),
-      nickname,
-      avatar: getAvatarColor(nickname),
-      socketId: socket.id,
-      currentRoom: null,
-      systemRole: 'user',
-      status: 'متصل',
-      joinedAt: Date.now(),
-    }
-
-    users.set(user.id, user)
-    currentUser = user
-
-    callback?.({ user: { id: user.id, nickname: user.nickname, avatar: user.avatar } })
-    io.emit('users:count', users.size)
-  })
-
-  socket.on('room:join', (data: { roomId: string }, callback) => {
-    if (!currentUser) return callback?.({ error: 'غير مسجل الدخول' })
-
-    const room = rooms.get(data.roomId)
-    if (!room) return callback?.({ error: 'الغرفة غير موجودة' })
-    if (room.members.size >= room.maxMembers) return callback?.({ error: 'الغرفة ممتلئة' })
-
-    // Leave current room
-    if (currentUser.currentRoom) {
-      const prevRoom = rooms.get(currentUser.currentRoom)
-      if (prevRoom) {
-        prevRoom.members.delete(currentUser.id)
-        socket.leave(currentUser.currentRoom)
-
-        const leaveMsg: Message = {
-          id: nanoid(),
-          roomId: currentUser.currentRoom,
-          senderId: 'system',
-          senderName: 'النظام',
-          senderAvatar: '',
-          type: 'system',
-          content: `${currentUser.nickname} غادر الغرفة`,
-          createdAt: Date.now(),
+      // Check duplicate nickname among online users
+      for (const u of socketToUser.values()) {
+        if (u.nickname === nickname) {
+          return callback?.({ error: 'هذا الاسم مستخدم بالفعل' })
         }
-        messages.get(currentUser.currentRoom)?.push(leaveMsg)
-        io.to(currentUser.currentRoom).emit('message:new', leaveMsg)
-        io.to(currentUser.currentRoom).emit('room:members', getRoomMembers(currentUser.currentRoom))
       }
+
+      const avatarColor = getAvatarColor(nickname)
+
+      // Create user in MongoDB
+      const user = await User.create({
+        nickname,
+        type: 'guest',
+        avatarColor,
+        systemRole: 'user',
+        status: 'active',
+      })
+
+      // Create session
+      const token = crypto.randomBytes(24).toString('hex')
+      const ip = (socket.handshake.headers['x-forwarded-for'] as string || socket.handshake.address || '').split(',')[0].trim()
+      const userAgent = socket.handshake.headers['user-agent'] || ''
+
+      await Session.create({
+        userId: user._id,
+        socketId: socket.id,
+        token,
+        ipAddress: ip,
+        userAgent,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      })
+
+      // Record fingerprint
+      if (data.signals) {
+        await recordFingerprint(user._id.toString(), ip, userAgent, data.signals)
+      }
+
+      currentUserId = user._id.toString()
+      socketToUser.set(socket.id, { id: currentUserId, nickname, avatar: avatarColor, currentRoom: null })
+
+      await logAction({ actionType: 'user.join', actorId: user._id, metadata: { type: 'guest', ip } })
+
+      callback?.({ user: { id: currentUserId, nickname, avatar: avatarColor } })
+      io.emit('users:count', getOnlineCount())
+    } catch (err) {
+      console.error('guest:join error:', err)
+      callback?.({ error: 'حدث خطأ' })
     }
-
-    // Join new room
-    room.members.add(currentUser.id)
-    currentUser.currentRoom = data.roomId
-    socket.join(data.roomId)
-
-    const joinMsg: Message = {
-      id: nanoid(),
-      roomId: data.roomId,
-      senderId: 'system',
-      senderName: 'النظام',
-      senderAvatar: '',
-      type: 'system',
-      content: `${currentUser.nickname} انضم إلى الغرفة`,
-      createdAt: Date.now(),
-    }
-    const roomMessages = messages.get(data.roomId) || []
-    roomMessages.push(joinMsg)
-    messages.set(data.roomId, roomMessages)
-
-    io.to(data.roomId).emit('message:new', joinMsg)
-    io.to(data.roomId).emit('room:members', getRoomMembers(data.roomId))
-
-    // Send last 50 messages to joining user
-    const recentMessages = roomMessages.slice(-50)
-    callback?.({
-      room: { id: room.id, name: room.name, description: room.description, type: room.type },
-      messages: recentMessages,
-      members: getRoomMembers(data.roomId),
-    })
-
-    // Broadcast updated room list
-    io.emit('rooms:update', getRoomList())
   })
 
-  socket.on('message:send', (data: { content: string }, callback) => {
-    if (!currentUser || !currentUser.currentRoom) return callback?.({ error: 'غير متصل بغرفة' })
+  socket.on('room:join', async (data: { roomId: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير مسجل الدخول' })
 
-    const content = data.content?.trim()
-    if (!content || content.length > 500) return callback?.({ error: 'الرسالة غير صالحة' })
+      const room = await Room.findById(data.roomId)
+      if (!room || room.status !== 'active') return callback?.({ error: 'الغرفة غير موجودة' })
 
-    const msg: Message = {
-      id: nanoid(),
-      roomId: currentUser.currentRoom,
-      senderId: currentUser.id,
-      senderName: currentUser.nickname,
-      senderAvatar: currentUser.avatar,
-      type: 'text',
-      content,
-      createdAt: Date.now(),
+      // Check if banned from this room
+      if (await isUserBanned(currentUserId, data.roomId)) {
+        return callback?.({ error: 'أنت محظور من هذه الغرفة' })
+      }
+
+      const memberCount = await Member.countDocuments({ roomId: data.roomId })
+      if (memberCount >= room.config.maxMembers) return callback?.({ error: 'الغرفة ممتلئة' })
+
+      const socketUser = socketToUser.get(socket.id)
+
+      // Leave current room
+      if (socketUser?.currentRoom) {
+        await Member.deleteOne({ roomId: socketUser.currentRoom, userId: currentUserId })
+        socket.leave(socketUser.currentRoom)
+
+        const leaveMsg = await createSystemMessage(socketUser.currentRoom, `${socketUser.nickname} غادر الغرفة`)
+        io.to(socketUser.currentRoom).emit('message:new', leaveMsg)
+        io.to(socketUser.currentRoom).emit('room:members', await getRoomMembersForClient(socketUser.currentRoom))
+      }
+
+      // Join new room
+      await Member.findOneAndUpdate(
+        { roomId: data.roomId, userId: currentUserId },
+        { roomRole: 'member', joinedAt: new Date() },
+        { upsert: true, new: true },
+      )
+
+      if (socketUser) socketUser.currentRoom = data.roomId
+      socket.join(data.roomId)
+
+      const joinMsg = await createSystemMessage(data.roomId, `${socketUser?.nickname} انضم إلى الغرفة`)
+      io.to(data.roomId).emit('message:new', joinMsg)
+
+      const members = await getRoomMembersForClient(data.roomId)
+      io.to(data.roomId).emit('room:members', members)
+
+      // Send last 50 messages
+      const recentMessages = await Message.find({ roomId: data.roomId, status: { $in: ['visible', 'flagged'] } })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean()
+
+      const messagesForClient = recentMessages.reverse().map((m) => ({
+        id: m._id.toString(),
+        roomId: m.roomId.toString(),
+        senderId: m.senderId?.toString() || 'system',
+        senderName: m.senderName,
+        senderAvatar: m.senderAvatar,
+        type: m.type,
+        content: m.content,
+        createdAt: m.createdAt.getTime(),
+      }))
+
+      callback?.({
+        room: { id: room._id.toString(), name: room.name, description: room.description, type: room.type },
+        messages: messagesForClient,
+        members,
+      })
+
+      io.emit('rooms:update', await getRoomListForClient())
+    } catch (err) {
+      console.error('room:join error:', err)
+      callback?.({ error: 'حدث خطأ' })
     }
-
-    const roomMessages = messages.get(currentUser.currentRoom) || []
-    roomMessages.push(msg)
-    if (roomMessages.length > 200) roomMessages.splice(0, roomMessages.length - 200)
-    messages.set(currentUser.currentRoom, roomMessages)
-
-    io.to(currentUser.currentRoom).emit('message:new', msg)
-    callback?.({ id: msg.id })
   })
+
+  socket.on('message:send', async (data: { content: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+
+      const socketUser = socketToUser.get(socket.id)
+      if (!socketUser?.currentRoom) return callback?.({ error: 'غير متصل بغرفة' })
+
+      const content = data.content?.trim()
+      if (!content || content.length > 500) return callback?.({ error: 'الرسالة غير صالحة' })
+
+      // Rate limit check
+      const rateCheck = checkRateLimit(currentUserId)
+      if (!rateCheck.allowed) {
+        return callback?.({ error: `أنت ترسل بسرعة كبيرة، انتظر ${rateCheck.retryAfter} ثواني` })
+      }
+
+      // Check if muted
+      if (await isUserMuted(currentUserId, socketUser.currentRoom)) {
+        return callback?.({ error: 'أنت في وضع الكتم' })
+      }
+
+      // Check if banned
+      if (await isUserBanned(currentUserId)) {
+        return callback?.({ error: 'حسابك محظور' })
+      }
+
+      // Store message
+      const msg = await Message.create({
+        roomId: socketUser.currentRoom,
+        senderId: currentUserId,
+        senderName: socketUser.nickname,
+        senderAvatar: socketUser.avatar,
+        type: 'text',
+        content,
+        status: 'visible',
+      })
+
+      const msgForClient = {
+        id: msg._id.toString(),
+        roomId: socketUser.currentRoom,
+        senderId: currentUserId,
+        senderName: socketUser.nickname,
+        senderAvatar: socketUser.avatar,
+        type: 'text' as const,
+        content,
+        createdAt: msg.createdAt.getTime(),
+      }
+
+      // Shadow ban check: only send to sender if shadow banned
+      if (await isShadowBanned(currentUserId, socketUser.currentRoom)) {
+        socket.emit('message:new', msgForClient)
+      } else {
+        io.to(socketUser.currentRoom).emit('message:new', msgForClient)
+      }
+
+      callback?.({ id: msg._id.toString() })
+    } catch (err) {
+      console.error('message:send error:', err)
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  // --- Moderation Events ---
+
+  socket.on('mod:action', async (data: {
+    action: 'mute' | 'ban' | 'kick' | 'shadow_ban' | 'warn'
+    targetUserId: string
+    roomId?: string
+    reason: string
+    duration?: number
+  }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+
+      const result = await executeModAction({
+        type: data.action,
+        targetUserId: data.targetUserId,
+        moderatorId: currentUserId,
+        roomId: data.roomId,
+        reason: data.reason || 'مخالفة',
+        duration: data.duration,
+      })
+
+      if (result.error) return callback?.({ error: result.error })
+
+      const socketUser = socketToUser.get(socket.id)
+      const targetSocketEntry = [...socketToUser.entries()].find(([, u]) => u.id === data.targetUserId)
+
+      // Handle kick — force target out of room
+      if (data.action === 'kick' && data.roomId && targetSocketEntry) {
+        const [targetSocketId, targetUser] = targetSocketEntry
+        const targetSocket = io.sockets.sockets.get(targetSocketId)
+        if (targetSocket) {
+          targetSocket.leave(data.roomId)
+          targetSocket.emit('room:kicked', { roomId: data.roomId, reason: data.reason })
+          if (targetUser) targetUser.currentRoom = null
+        }
+
+        const kickMsg = await createSystemMessage(data.roomId, `${targetUser.nickname} تم طرده من الغرفة`)
+        io.to(data.roomId).emit('message:new', kickMsg)
+        io.to(data.roomId).emit('room:members', await getRoomMembersForClient(data.roomId))
+      }
+
+      // Handle ban — force target out
+      if (data.action === 'ban') {
+        if (data.roomId && targetSocketEntry) {
+          const [targetSocketId, targetUser] = targetSocketEntry
+          const targetSocket = io.sockets.sockets.get(targetSocketId)
+          if (targetSocket) {
+            targetSocket.leave(data.roomId)
+            targetSocket.emit('room:banned', { roomId: data.roomId, reason: data.reason, global: false })
+            if (targetUser) targetUser.currentRoom = null
+          }
+
+          const banMsg = await createSystemMessage(data.roomId, `${targetUser.nickname} تم حظره`)
+          io.to(data.roomId).emit('message:new', banMsg)
+          io.to(data.roomId).emit('room:members', await getRoomMembersForClient(data.roomId))
+        } else if (!data.roomId && targetSocketEntry) {
+          // Global ban — disconnect
+          const [targetSocketId] = targetSocketEntry
+          const targetSocket = io.sockets.sockets.get(targetSocketId)
+          if (targetSocket) {
+            targetSocket.emit('user:banned', { reason: data.reason })
+            targetSocket.disconnect(true)
+          }
+        }
+      }
+
+      // Handle mute notification
+      if (data.action === 'mute' && data.roomId && targetSocketEntry) {
+        const [targetSocketId] = targetSocketEntry
+        const targetSocket = io.sockets.sockets.get(targetSocketId)
+        targetSocket?.emit('room:muted', { roomId: data.roomId, reason: data.reason, duration: data.duration })
+
+        const muteMsg = await createSystemMessage(data.roomId, `${targetSocketEntry[1].nickname} تم كتمه`)
+        io.to(data.roomId).emit('message:new', muteMsg)
+      }
+
+      io.emit('rooms:update', await getRoomListForClient())
+      callback?.({ success: true })
+    } catch (err) {
+      console.error('mod:action error:', err)
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  socket.on('mod:delete-message', async (data: { messageId: string; reason: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ error: 'غير متصل' })
+
+      const result = await deleteMessage(data.messageId, currentUserId, data.reason || 'محتوى مخالف')
+      if (result.error) return callback?.({ error: result.error })
+
+      io.to(result.roomId!).emit('message:deleted', { messageId: data.messageId })
+      callback?.({ success: true })
+    } catch (err) {
+      console.error('mod:delete-message error:', err)
+      callback?.({ error: 'حدث خطأ' })
+    }
+  })
+
+  socket.on('mod:check-permissions', async (data: { targetUserId: string; roomId?: string }, callback) => {
+    try {
+      if (!currentUserId) return callback?.({ actions: [] })
+
+      const moderator = await User.findById(currentUserId)
+      if (!moderator) return callback?.({ actions: [] })
+
+      const actions: string[] = []
+      for (const action of ['mute', 'kick', 'ban', 'warn', 'shadow_ban'] as const) {
+        const check = await canModerate(currentUserId, data.targetUserId, action, data.roomId)
+        if (check.allowed) actions.push(action)
+      }
+
+      callback?.({ actions })
+    } catch (err) {
+      callback?.({ actions: [] })
+    }
+  })
+
+  // --- Typing ---
 
   socket.on('typing:start', () => {
-    if (currentUser?.currentRoom) {
-      socket.to(currentUser.currentRoom).emit('typing:update', {
-        userId: currentUser.id,
-        nickname: currentUser.nickname,
+    const socketUser = socketToUser.get(socket.id)
+    if (socketUser?.currentRoom) {
+      socket.to(socketUser.currentRoom).emit('typing:update', {
+        userId: socketUser.id,
+        nickname: socketUser.nickname,
         typing: true,
       })
     }
   })
 
   socket.on('typing:stop', () => {
-    if (currentUser?.currentRoom) {
-      socket.to(currentUser.currentRoom).emit('typing:update', {
-        userId: currentUser.id,
-        nickname: currentUser.nickname,
+    const socketUser = socketToUser.get(socket.id)
+    if (socketUser?.currentRoom) {
+      socket.to(socketUser.currentRoom).emit('typing:update', {
+        userId: socketUser.id,
+        nickname: socketUser.nickname,
         typing: false,
       })
     }
   })
 
-  socket.on('disconnect', () => {
-    if (!currentUser) return
+  // --- Disconnect ---
 
-    if (currentUser.currentRoom) {
-      const room = rooms.get(currentUser.currentRoom)
-      if (room) {
-        room.members.delete(currentUser.id)
-        const leaveMsg: Message = {
-          id: nanoid(),
-          roomId: currentUser.currentRoom,
-          senderId: 'system',
-          senderName: 'النظام',
-          senderAvatar: '',
-          type: 'system',
-          content: `${currentUser.nickname} غادر الغرفة`,
-          createdAt: Date.now(),
-        }
-        messages.get(currentUser.currentRoom)?.push(leaveMsg)
-        io.to(currentUser.currentRoom).emit('message:new', leaveMsg)
-        io.to(currentUser.currentRoom).emit('room:members', getRoomMembers(currentUser.currentRoom))
+  socket.on('disconnect', async () => {
+    try {
+      const socketUser = socketToUser.get(socket.id)
+      if (!socketUser) return
+
+      if (socketUser.currentRoom) {
+        await Member.deleteOne({ roomId: socketUser.currentRoom, userId: socketUser.id })
+        const leaveMsg = await createSystemMessage(socketUser.currentRoom, `${socketUser.nickname} غادر الغرفة`)
+        io.to(socketUser.currentRoom).emit('message:new', leaveMsg)
+        io.to(socketUser.currentRoom).emit('room:members', await getRoomMembersForClient(socketUser.currentRoom))
       }
-    }
 
-    users.delete(currentUser.id)
-    io.emit('users:count', users.size)
-    io.emit('rooms:update', getRoomList())
+      // Clean up session
+      await Session.deleteMany({ socketId: socket.id })
+
+      // Mark guest users as inactive (don't delete — audit trail)
+      const user = await User.findById(socketUser.id)
+      if (user?.type === 'guest') {
+        // Guest users are ephemeral but we keep them for audit
+      }
+
+      socketToUser.delete(socket.id)
+      io.emit('users:count', getOnlineCount())
+      io.emit('rooms:update', await getRoomListForClient())
+    } catch (err) {
+      console.error('disconnect error:', err)
+      socketToUser.delete(socket.id)
+    }
   })
 })
 
-function getRoomMembers(roomId: string) {
-  const room = rooms.get(roomId)
-  if (!room) return []
-  return Array.from(room.members)
-    .map((uid) => users.get(uid))
-    .filter(Boolean)
-    .map((u) => ({
-      id: u!.id,
-      nickname: u!.nickname,
-      avatar: u!.avatar,
-      systemRole: u!.systemRole,
-    }))
-}
-
-function getRoomList() {
-  return Array.from(rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    type: r.type,
-    maxMembers: r.maxMembers,
-    memberCount: r.members.size,
-    featured: r.featured,
-    coverImage: r.coverImage,
-  }))
-}
+// --- Startup ---
 
 const PORT = parseInt(process.env.PORT || '3001')
-httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
+
+async function start() {
+  await connectDB()
+  await seedRooms()
+
+  httpServer.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`)
+  })
+}
+
+start().catch((err) => {
+  console.error('Failed to start:', err)
+  process.exit(1)
 })

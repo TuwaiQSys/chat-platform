@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, Send, Users, X, Hash } from 'lucide-react'
+import { ArrowRight, Send, Users, X, Hash, Shield } from 'lucide-react'
 import { socket } from '@/lib/socket'
 import { useStore, type ChatMessage, type ChatUser } from '@/hooks/useStore'
+import UserActionMenu from '@/components/UserActionMenu'
 
 export default function ChatRoomPage() {
   const {
@@ -19,6 +20,8 @@ export default function ChatRoomPage() {
   } = useStore()
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const [actionMenu, setActionMenu] = useState<{ target: ChatUser; position: { x: number; y: number } } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>()
@@ -28,6 +31,61 @@ export default function ChatRoomPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Moderation event listeners
+  useEffect(() => {
+    const onKicked = (data: { roomId: string; reason: string }) => {
+      showToast(`تم طردك: ${data.reason}`)
+      setCurrentRoom(null)
+      setMessages([])
+      setMembers([])
+      navigate('/lobby')
+    }
+
+    const onBanned = (data: { roomId: string; reason: string }) => {
+      showToast(`تم حظرك: ${data.reason}`)
+      setCurrentRoom(null)
+      setMessages([])
+      setMembers([])
+      navigate('/lobby')
+    }
+
+    const onGlobalBanned = (data: { reason: string }) => {
+      showToast(`تم حظرك نهائيًا: ${data.reason}`)
+      socket.disconnect()
+      navigate('/')
+    }
+
+    const onMuted = (data: { roomId: string; reason: string; duration?: number }) => {
+      const dur = data.duration ? `${data.duration} دقيقة` : 'بشكل دائم'
+      showToast(`تم كتمك لمدة ${dur}: ${data.reason}`)
+    }
+
+    const onMessageDeleted = (data: { messageId: string }) => {
+      useStore.setState((state) => ({
+        messages: state.messages.filter((m) => m.id !== data.messageId),
+      }))
+    }
+
+    socket.on('room:kicked', onKicked)
+    socket.on('room:banned', onBanned)
+    socket.on('user:banned', onGlobalBanned)
+    socket.on('room:muted', onMuted)
+    socket.on('message:deleted', onMessageDeleted)
+
+    return () => {
+      socket.off('room:kicked', onKicked)
+      socket.off('room:banned', onBanned)
+      socket.off('user:banned', onGlobalBanned)
+      socket.off('room:muted', onMuted)
+      socket.off('message:deleted', onMessageDeleted)
+    }
+  }, [navigate, setCurrentRoom, setMessages, setMembers])
+
+  const showToast = (msg: string) => {
+    setToast(msg)
+    setTimeout(() => setToast(null), 4000)
+  }
 
   // Leave room
   const leaveRoom = useCallback(() => {
@@ -48,10 +106,12 @@ export default function ChatRoomPage() {
     setSending(true)
     socket.emit('message:send', { content }, (res: any) => {
       setSending(false)
-      if (!res.error) {
-        setInput('')
-        inputRef.current?.focus()
+      if (res.error) {
+        showToast(res.error)
+        return
       }
+      setInput('')
+      inputRef.current?.focus()
     })
 
     socket.emit('typing:stop')
@@ -63,6 +123,12 @@ export default function ChatRoomPage() {
     socket.emit('typing:start')
     if (typingTimeout.current) clearTimeout(typingTimeout.current)
     typingTimeout.current = setTimeout(() => socket.emit('typing:stop'), 2000)
+  }
+
+  // Username click for action menu
+  const handleUsernameClick = (target: ChatUser, e: React.MouseEvent) => {
+    if (target.id === user?.id) return
+    setActionMenu({ target, position: { x: e.clientX, y: e.clientY } })
   }
 
   // Filter typing users (exclude self)
@@ -77,6 +143,13 @@ export default function ChatRoomPage() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* Toast notification */}
+      {toast && (
+        <div className="absolute left-1/2 top-14 z-50 -translate-x-1/2 animate-fade-in rounded-xl border border-red-500/20 bg-red-900/80 px-4 py-2.5 text-sm text-red-200 shadow-lg backdrop-blur">
+          {toast}
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex items-center justify-between border-b border-white/5 px-3 py-2.5 sm:px-4 sm:py-3">
         <div className="flex items-center gap-2 sm:gap-3">
@@ -111,7 +184,13 @@ export default function ChatRoomPage() {
           <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
             <div className="mx-auto max-w-2xl space-y-1">
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} isOwn={msg.senderId === user?.id} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  isOwn={msg.senderId === user?.id}
+                  onUsernameClick={handleUsernameClick}
+                  members={members}
+                />
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -157,7 +236,6 @@ export default function ChatRoomPage() {
         {/* Members sidebar */}
         {sidebarOpen && (
           <>
-            {/* Backdrop (mobile) */}
             <div
               className="absolute inset-0 z-10 bg-black/50 sm:hidden"
               onClick={() => setSidebarOpen(false)}
@@ -172,18 +250,43 @@ export default function ChatRoomPage() {
               </div>
               <div className="overflow-y-auto p-2">
                 {members.map((member) => (
-                  <MemberItem key={member.id} member={member} isYou={member.id === user?.id} />
+                  <MemberItem
+                    key={member.id}
+                    member={member}
+                    isYou={member.id === user?.id}
+                    onClick={(e) => handleUsernameClick(member, e)}
+                  />
                 ))}
               </div>
             </aside>
           </>
         )}
       </div>
+
+      {/* Action menu */}
+      {actionMenu && currentRoom && (
+        <UserActionMenu
+          target={actionMenu.target}
+          roomId={currentRoom.id}
+          position={actionMenu.position}
+          onClose={() => setActionMenu(null)}
+        />
+      )}
     </div>
   )
 }
 
-function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn: boolean }) {
+function MessageBubble({
+  message,
+  isOwn,
+  onUsernameClick,
+  members,
+}: {
+  message: ChatMessage
+  isOwn: boolean
+  onUsernameClick: (target: ChatUser, e: React.MouseEvent) => void
+  members: ChatUser[]
+}) {
   if (message.type === 'system') {
     return (
       <div className="flex justify-center py-1.5">
@@ -200,12 +303,17 @@ function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn: boolea
     hour12: true,
   })
 
+  const senderMember = members.find((m) => m.id === message.senderId)
+
   return (
     <div className={`flex gap-2 py-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'} animate-fade-in`}>
       {/* Avatar */}
       <div
-        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+        className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${!isOwn ? 'cursor-pointer hover:ring-2 hover:ring-white/20' : ''}`}
         style={{ background: message.senderAvatar }}
+        onClick={(e) => {
+          if (!isOwn && senderMember) onUsernameClick(senderMember, e)
+        }}
       >
         {message.senderName.charAt(0)}
       </div>
@@ -213,7 +321,17 @@ function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn: boolea
       <div className={`max-w-[75%] sm:max-w-[65%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
         {/* Name + time */}
         <div className={`flex items-center gap-2 px-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-          <span className="text-xs font-medium text-white/40">{message.senderName}</span>
+          <span
+            className={`text-xs font-medium text-white/40 ${!isOwn ? 'cursor-pointer hover:text-white/60' : ''}`}
+            onClick={(e) => {
+              if (!isOwn && senderMember) onUsernameClick(senderMember, e)
+            }}
+          >
+            {message.senderName}
+          </span>
+          {senderMember?.systemRole && senderMember.systemRole !== 'user' && (
+            <Shield className="h-3 w-3 text-indigo-400" />
+          )}
           <span className="text-[10px] text-white/15">{time}</span>
         </div>
 
@@ -232,9 +350,12 @@ function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn: boolea
   )
 }
 
-function MemberItem({ member, isYou }: { member: ChatUser; isYou: boolean }) {
+function MemberItem({ member, isYou, onClick }: { member: ChatUser; isYou: boolean; onClick: (e: React.MouseEvent) => void }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.03] transition-colors">
+    <div
+      className={`flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${isYou ? '' : 'cursor-pointer hover:bg-white/[0.05]'}`}
+      onClick={isYou ? undefined : onClick}
+    >
       <div className="relative">
         <div
           className="flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold text-white"
@@ -244,10 +365,15 @@ function MemberItem({ member, isYou }: { member: ChatUser; isYou: boolean }) {
         </div>
         <div className="absolute -bottom-0.5 -left-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0d0d18] bg-emerald-500" />
       </div>
-      <span className="truncate text-sm text-white/60">
-        {member.nickname}
-        {isYou && <span className="mr-1 text-[10px] text-white/20">(أنت)</span>}
-      </span>
+      <div className="flex items-center gap-1.5 truncate">
+        <span className="truncate text-sm text-white/60">
+          {member.nickname}
+          {isYou && <span className="mr-1 text-[10px] text-white/20">(أنت)</span>}
+        </span>
+        {member.systemRole && member.systemRole !== 'user' && (
+          <Shield className="h-3 w-3 shrink-0 text-indigo-400" />
+        )}
+      </div>
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { MessageCircle } from 'lucide-react'
 import { socket } from '@/lib/socket'
+import { collectSignals } from '@/lib/fingerprint'
 import { useStore } from '@/hooks/useStore'
 
 export default function EntryPage() {
@@ -27,7 +28,8 @@ export default function EntryPage() {
 
     if (!socket.connected) socket.connect()
 
-    socket.emit('guest:join', { nickname: trimmed }, (res: any) => {
+    const signals = collectSignals()
+    socket.emit('guest:join', { nickname: trimmed, signals }, (res: any) => {
       setLoading(false)
       if (res.error) {
         setError(res.error)
