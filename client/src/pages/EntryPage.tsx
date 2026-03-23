@@ -62,7 +62,7 @@ export default function EntryPage() {
 
     try {
       const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login'
-      const body = isRegister ? { nickname: nickname.trim(), email, password } : { email, password }
+      const body = isRegister ? { nickname: nickname.trim(), email, password } : { identifier: email, password }
 
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -77,11 +77,12 @@ export default function EntryPage() {
 
       socket.emit('auth:join', { token: data.token }, (socketRes: any) => {
         if (socketRes.error) { setLoading(false); return setError(socketRes.error) }
-        setUser(socketRes.user)
 
-        if (data.user.type === 'admin') {
-          navigate('/admin')
+        if (data.user.isAdmin) {
+          navigate('/admin', { replace: true })
+          setTimeout(() => setUser(socketRes.user), 0)
         } else {
+          setUser(socketRes.user)
           joinGeneralRoom(socket)
         }
       })
