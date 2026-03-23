@@ -213,9 +213,10 @@ export default function UserProfilePopup({ target, roomId, onClose, onOpenDM }: 
                 {MOD_CATEGORIES.map(cat => {
                   const visible = cat.actions.filter(a => {
                     if (a.key.startsWith('visibility.')) return userPerms.includes('admin.manage_users')
-                    // Map action key to permission
-                    const permKey = a.key.startsWith('mod.') ? a.key : `mod.${a.key}`
-                    return availablePerms.includes(permKey) || availablePerms.includes(a.key)
+                    if (a.key === 'warn') return availablePerms.some(p => p.startsWith('mod.'))
+                    // Map action key to permission: kick.room → mod.kick.room
+                    const permKey = `mod.${a.key}`
+                    return availablePerms.includes(permKey)
                   })
                   if (visible.length === 0) return null
 

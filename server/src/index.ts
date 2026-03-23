@@ -303,8 +303,13 @@ io.on('connection', (socket) => {
       const user = await User.findById(payload.userId).populate('roles')
       if (!user || user.status !== 'active') return callback?.({ error: 'الحساب غير متاح' })
 
-      for (const u of socketToUser.values()) {
-        if (u.id === user._id.toString()) return callback?.({ error: 'أنت متصل بالفعل' })
+      // Disconnect old socket if user was already connected (e.g. page refresh)
+      for (const [oldSid, u] of socketToUser.entries()) {
+        if (u.id === user._id.toString() && oldSid !== socket.id) {
+          const oldSocket = io.sockets.sockets.get(oldSid)
+          if (oldSocket) oldSocket.disconnect(true)
+          socketToUser.delete(oldSid)
+        }
       }
 
       const ip = getIp()
@@ -360,9 +365,13 @@ io.on('connection', (socket) => {
       const user = await User.findById(session.userId).populate('roles')
       if (!user || user.status !== 'active') return callback?.({ error: 'الحساب غير متاح' })
 
-      // Check if already connected
-      for (const u of socketToUser.values()) {
-        if (u.id === user._id.toString()) return callback?.({ error: 'أنت متصل بالفعل' })
+      // Disconnect old socket if user was already connected (e.g. page refresh)
+      for (const [oldSid, u] of socketToUser.entries()) {
+        if (u.id === user._id.toString() && oldSid !== socket.id) {
+          const oldSocket = io.sockets.sockets.get(oldSid)
+          if (oldSocket) oldSocket.disconnect(true)
+          socketToUser.delete(oldSid)
+        }
       }
 
       // Update session with new socket
@@ -696,7 +705,7 @@ io.on('connection', (socket) => {
   })
 
   // === ROOM CREATE ===
-  socket.on('room:create', async (data: { name: string; description?: string; type?: string }, callback) => {
+  socket.on('room:create', async (data: { name: string; description?: string; type?: string; access?: string; maxMembers?: number; config?: any }, callback) => {
     try {
       if (!currentUserId) return callback?.({ error: 'غير متصل' })
       if (!await hasPermission(currentUserId, 'room.create')) return callback?.({ error: 'لا تملك صلاحية إنشاء غرف' })
@@ -704,12 +713,22 @@ io.on('connection', (socket) => {
       const name = data.name?.trim()
       if (!name || name.length < 2 || name.length > 30) return callback?.({ error: 'اسم الغرفة غير صالح' })
 
+      const roomConfig = {
+        maxMembers: data.maxMembers || 30,
+        slowModeSeconds: data.config?.slowModeSeconds || 0,
+        allowMediaUpload: data.config?.allowMediaUpload ?? false,
+        maxMessageLength: 500,
+        linkPolicy: data.config?.linkPolicy || 'allow',
+        wordBlocklist: [],
+      }
+
       const room = await Room.create({
         name,
         description: data.description?.trim() || '',
         type: data.type || 'text',
+        access: data.access || 'public',
         createdBy: currentUserId,
-        config: { maxMembers: 30, slowModeSeconds: 0, allowMediaUpload: false, maxMessageLength: 500, linkPolicy: 'allow', wordBlocklist: [] },
+        config: roomConfig,
       })
 
       await logAction({ actionType: 'room.create', actorId: currentUserId, targetId: room._id.toString(), targetType: 'room' })
@@ -744,7 +763,9 @@ io.on('connection', (socket) => {
         io.to(su.currentRoom).emit('room:members', await getRoomMembersForClient(su.currentRoom))
       }
 
-      await Session.deleteMany({ socketId: socket.id })
+      // Don't delete session from DB — it has TTL and is needed for refresh restore
+      // Just update it to mark socket as disconnected
+      await Session.updateMany({ socketId: socket.id }, { $set: { socketId: null } })
       socketToUser.delete(socket.id)
       io.emit('users:count', getOnlineCount())
       io.emit('rooms:update', await getRoomListForClient())

@@ -30,7 +30,7 @@ export default function ChatPage() {
 
   // Room creation
   const [showNewRoom, setShowNewRoom] = useState(false)
-  const [newRoom, setNewRoom] = useState({ name: '', description: '', type: 'text', maxMembers: 40, access: 'public' })
+  const [newRoom, setNewRoom] = useState({ name: '', description: '', type: 'text', maxMembers: 40, access: 'public', allowMedia: true, allowLinks: true, slowModeSeconds: 0, allowGuests: true })
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const dmEndRef = useRef<HTMLDivElement>(null)
@@ -108,9 +108,13 @@ export default function ChatPage() {
 
   const createRoom = () => {
     if (!newRoom.name.trim()) return
-    socket.emit('room:create', { name: newRoom.name.trim(), description: newRoom.description, type: newRoom.type }, (res: any) => {
+    socket.emit('room:create', {
+      name: newRoom.name.trim(), description: newRoom.description, type: newRoom.type,
+      access: newRoom.access, maxMembers: newRoom.maxMembers,
+      config: { allowMediaUpload: newRoom.allowMedia, linkPolicy: newRoom.allowLinks ? 'allow' : 'strip', slowModeSeconds: newRoom.slowModeSeconds },
+    }, (res: any) => {
       if (res.error) return showToast(res.error)
-      setNewRoom({ name: '', description: '', type: 'text', maxMembers: 40, access: 'public' })
+      setNewRoom({ name: '', description: '', type: 'text', maxMembers: 40, access: 'public', allowMedia: true, allowLinks: true, slowModeSeconds: 0, allowGuests: true })
       setShowNewRoom(false)
       showToast(`تم إنشاء: ${res.room.name}`)
     })
@@ -314,7 +318,7 @@ export default function ChatPage() {
                 {canCreateRoom && <button onClick={() => setShowNewRoom(!showNewRoom)} className="text-[10px] text-blue-200 hover:text-white">+ جديدة</button>}
               </div>
               {showNewRoom && (
-                <div className="p-2 border-b border-gray-300 bg-white animate-fade-in space-y-1.5">
+                <div className="p-2 border-b border-gray-300 bg-white animate-fade-in space-y-1.5" dir="rtl">
                   <input value={newRoom.name} onChange={e => setNewRoom({ ...newRoom, name: e.target.value })} placeholder="اسم الغرفة..." className="w-full rounded border border-gray-300 px-2 py-1 text-xs" dir="auto" autoFocus />
                   <input value={newRoom.description} onChange={e => setNewRoom({ ...newRoom, description: e.target.value })} placeholder="وصف (اختياري)..." className="w-full rounded border border-gray-300 px-2 py-1 text-xs" dir="auto" />
                   <div className="flex gap-1">
@@ -329,7 +333,29 @@ export default function ChatPage() {
                       <option value="private">خاصة</option>
                     </select>
                   </div>
-                  <button onClick={createRoom} className="w-full rounded bg-blue-500 py-1 text-[10px] text-white">إنشاء</button>
+                  <div className="flex gap-1">
+                    <div className="flex-1 flex items-center gap-1">
+                      <label className="text-[9px] text-gray-500">الحد:</label>
+                      <input type="number" value={newRoom.maxMembers} onChange={e => setNewRoom({ ...newRoom, maxMembers: +e.target.value })} className="w-12 rounded border border-gray-300 px-1 py-0.5 text-[10px] text-center" />
+                    </div>
+                    <div className="flex-1 flex items-center gap-1">
+                      <label className="text-[9px] text-gray-500">بطيء:</label>
+                      <input type="number" value={newRoom.slowModeSeconds} onChange={e => setNewRoom({ ...newRoom, slowModeSeconds: +e.target.value })} className="w-12 rounded border border-gray-300 px-1 py-0.5 text-[10px] text-center" placeholder="0" />
+                      <span className="text-[8px] text-gray-400">ث</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 text-[9px]">
+                    <label className="flex items-center gap-1 text-gray-500">
+                      <input type="checkbox" checked={newRoom.allowMedia} onChange={e => setNewRoom({ ...newRoom, allowMedia: e.target.checked })} className="h-3 w-3" /> وسائط
+                    </label>
+                    <label className="flex items-center gap-1 text-gray-500">
+                      <input type="checkbox" checked={newRoom.allowLinks} onChange={e => setNewRoom({ ...newRoom, allowLinks: e.target.checked })} className="h-3 w-3" /> روابط
+                    </label>
+                    <label className="flex items-center gap-1 text-gray-500">
+                      <input type="checkbox" checked={newRoom.allowGuests} onChange={e => setNewRoom({ ...newRoom, allowGuests: e.target.checked })} className="h-3 w-3" /> زوار
+                    </label>
+                  </div>
+                  <button onClick={createRoom} className="w-full rounded bg-blue-500 py-1 text-[10px] text-white hover:bg-blue-600">إنشاء</button>
                 </div>
               )}
               <div className="flex-1 overflow-y-auto">
