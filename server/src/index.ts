@@ -24,9 +24,11 @@ import { executeModAction, isUserMuted, isUserBanned, isIpBanned, isFingerprintB
 import { getUserPermissions, getUserRoleDisplay, hasPermission, invalidateCache } from './modules/roles/role.service.js'
 import { recordFingerprint, type ClientSignals } from './modules/anti-abuse/fingerprint.service.js'
 import { logAction } from './modules/audit/audit.service.js'
-import { checkRateLimit } from './middleware/rate-limiter.js'
+import { checkRateLimit, checkDuplicateMessage } from './middleware/rate-limiter.js'
+import { getAntiAbuseConfig } from './modules/anti-abuse/anti-abuse-config.model.js'
 import authRoutes from './modules/identity/auth.routes.js'
 import adminRoutes from './modules/identity/admin.routes.js'
+import antiAbuseRoutes from './modules/anti-abuse/anti-abuse.routes.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -41,6 +43,7 @@ app.use(express.json())
 // --- Routes ---
 app.use('/api/auth', authRoutes)
 app.use('/api/admin', adminRoutes)
+app.use('/api/admin/anti-abuse', antiAbuseRoutes)
 
 // --- In-memory socket → user mapping ---
 interface SocketUser {
@@ -409,8 +412,10 @@ io.on('connection', (socket) => {
       const canSend = socketUser.permissions.includes('chat.send_text')
       if (!canSend) return callback?.({ error: 'لا تملك صلاحية الإرسال' })
 
-      const rateCheck = checkRateLimit(currentUserId)
+      const rateCheck = await checkRateLimit(currentUserId)
       if (!rateCheck.allowed) return callback?.({ error: `انتظر ${rateCheck.retryAfter} ثواني` })
+
+      if (await checkDuplicateMessage(currentUserId, content)) return callback?.({ error: 'لا يمكنك إرسال نفس الرسالة مرتين' })
 
       if (await isUserMuted(currentUserId, socketUser.currentRoom)) return callback?.({ error: 'أنت في وضع الكتم' })
       if (await isUserBanned(currentUserId)) return callback?.({ error: 'حسابك محظور' })
@@ -666,6 +671,7 @@ async function start() {
   await seedRooms()
   await seedSuperAdmin()
   await seedPlans()
+  await getAntiAbuseConfig() // seeds default if not exists
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)

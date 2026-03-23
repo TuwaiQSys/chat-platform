@@ -7,6 +7,14 @@ export interface IRoomConfig {
   maxMessageLength: number
   linkPolicy: 'allow' | 'strip' | 'preview'
   wordBlocklist: string[]
+  access: 'public' | 'restricted' | 'private'
+  tags: string[]
+  floodLimit: number
+  floodWindowSeconds: number
+  duplicateProtection: boolean
+  joinRoles: mongoose.Types.ObjectId[]   // roles allowed to join (empty = all)
+  postRoles: mongoose.Types.ObjectId[]   // roles allowed to post (empty = all)
+  speakRoles: mongoose.Types.ObjectId[]  // roles allowed to voice (empty = all)
 }
 
 export interface IRoom extends Document {
@@ -18,6 +26,7 @@ export interface IRoom extends Document {
   status: 'active' | 'archived' | 'deleted'
   featured: boolean
   coverImage?: string
+  sortOrder: number
   createdAt: Date
   updatedAt: Date
 }
@@ -30,6 +39,14 @@ const RoomConfigSchema = new Schema<IRoomConfig>(
     maxMessageLength: { type: Number, default: 500 },
     linkPolicy: { type: String, enum: ['allow', 'strip', 'preview'], default: 'allow' },
     wordBlocklist: { type: [String], default: [] },
+    access: { type: String, enum: ['public', 'restricted', 'private'], default: 'public' },
+    tags: { type: [String], default: [] },
+    floodLimit: { type: Number, default: 10 },
+    floodWindowSeconds: { type: Number, default: 10 },
+    duplicateProtection: { type: Boolean, default: false },
+    joinRoles: [{ type: Schema.Types.ObjectId, ref: 'Role' }],
+    postRoles: [{ type: Schema.Types.ObjectId, ref: 'Role' }],
+    speakRoles: [{ type: Schema.Types.ObjectId, ref: 'Role' }],
   },
   { _id: false },
 )
@@ -44,10 +61,12 @@ const RoomSchema = new Schema<IRoom>(
     status: { type: String, enum: ['active', 'archived', 'deleted'], default: 'active' },
     featured: { type: Boolean, default: false },
     coverImage: String,
+    sortOrder: { type: Number, default: 0 },
   },
   { timestamps: true },
 )
 
 RoomSchema.index({ status: 1 })
+RoomSchema.index({ sortOrder: 1 })
 
 export const Room = mongoose.model<IRoom>('Room', RoomSchema)
