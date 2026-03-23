@@ -3,6 +3,11 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
 import crypto from 'crypto'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 import { connectDB, dbConnected } from './config/db.js'
 import { User } from './modules/identity/user.model.js'
@@ -704,6 +709,15 @@ io.on('connection', (socket) => {
 })
 
 // --- Startup ---
+
+// --- Serve client build in production ---
+const clientBuildPath = path.join(__dirname, '../../client/dist')
+app.use(express.static(clientBuildPath))
+app.get('*', (_req, res, next) => {
+  // Don't serve index.html for API routes
+  if (_req.path.startsWith('/api') || _req.path.startsWith('/socket.io')) return next()
+  res.sendFile(path.join(clientBuildPath, 'index.html'))
+})
 
 const PORT = parseInt(process.env.PORT || '3001')
 
