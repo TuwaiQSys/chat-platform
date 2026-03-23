@@ -1,17 +1,18 @@
 import mongoose, { Schema, type Document } from 'mongoose'
 
 // Permissions that can be toggled per plan or per user
+// All functional features (chat, message length) are the same for everyone.
+// Plans only control cosmetic/visual perks and elevated privileges.
 export interface IPermissions {
-  canChat: boolean
   canUploadAvatar: boolean
   canUploadMedia: boolean
   canCreateRooms: boolean
   maxRoomsOwned: number
+  nicknameColor: string | null  // null = default, hex color = custom
   canChangeNicknameColor: boolean
-  canSeeOnlineList: boolean
   canSendPrivateMessages: boolean
-  maxMessageLength: number
   badge?: string
+  entryEffect?: string  // e.g. 'glow', 'sparkle' — visual effect on join
 }
 
 export interface IMembershipPlan extends Document {
@@ -29,16 +30,15 @@ export interface IMembershipPlan extends Document {
 
 const PermissionsSchema = new Schema<IPermissions>(
   {
-    canChat: { type: Boolean, default: true },
     canUploadAvatar: { type: Boolean, default: false },
     canUploadMedia: { type: Boolean, default: false },
     canCreateRooms: { type: Boolean, default: false },
     maxRoomsOwned: { type: Number, default: 0 },
+    nicknameColor: { type: String, default: null },
     canChangeNicknameColor: { type: Boolean, default: false },
-    canSeeOnlineList: { type: Boolean, default: true },
     canSendPrivateMessages: { type: Boolean, default: false },
-    maxMessageLength: { type: Number, default: 500 },
     badge: String,
+    entryEffect: String,
   },
   { _id: false },
 )
@@ -72,15 +72,13 @@ export async function seedPlans() {
       durationDays: 0,
       sortOrder: 0,
       permissions: {
-        canChat: true,
         canUploadAvatar: false,
         canUploadMedia: false,
         canCreateRooms: false,
         maxRoomsOwned: 0,
+        nicknameColor: null,
         canChangeNicknameColor: false,
-        canSeeOnlineList: true,
         canSendPrivateMessages: false,
-        maxMessageLength: 300,
       },
     },
     {
@@ -90,16 +88,15 @@ export async function seedPlans() {
       durationDays: 30,
       sortOrder: 1,
       permissions: {
-        canChat: true,
         canUploadAvatar: true,
         canUploadMedia: true,
         canCreateRooms: true,
         maxRoomsOwned: 3,
+        nicknameColor: '#f59e0b',
         canChangeNicknameColor: true,
-        canSeeOnlineList: true,
         canSendPrivateMessages: true,
-        maxMessageLength: 1000,
         badge: '⭐',
+        entryEffect: 'glow',
       },
     },
     {
@@ -109,16 +106,15 @@ export async function seedPlans() {
       durationDays: 30,
       sortOrder: 2,
       permissions: {
-        canChat: true,
         canUploadAvatar: true,
         canUploadMedia: true,
         canCreateRooms: true,
         maxRoomsOwned: 10,
+        nicknameColor: '#a855f7',
         canChangeNicknameColor: true,
-        canSeeOnlineList: true,
         canSendPrivateMessages: true,
-        maxMessageLength: 2000,
         badge: '👑',
+        entryEffect: 'sparkle',
       },
     },
   ]

@@ -52,16 +52,15 @@ export default function MembershipsPage() {
   }
 
   const PERM_LABELS: Record<string, string> = {
-    canChat: 'الدردشة',
     canUploadAvatar: 'رفع صورة',
     canUploadMedia: 'رفع وسائط',
     canCreateRooms: 'إنشاء غرف',
     maxRoomsOwned: 'أقصى عدد غرف',
+    nicknameColor: 'لون الاسم',
     canChangeNicknameColor: 'تغيير لون الاسم',
-    canSeeOnlineList: 'قائمة المتصلين',
     canSendPrivateMessages: 'رسائل خاصة',
-    maxMessageLength: 'أقصى طول رسالة',
     badge: 'الشارة',
+    entryEffect: 'تأثير الدخول',
   }
 
   return (
