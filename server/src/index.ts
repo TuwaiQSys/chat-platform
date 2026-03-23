@@ -29,6 +29,8 @@ import { getAntiAbuseConfig } from './modules/anti-abuse/anti-abuse-config.model
 import authRoutes from './modules/identity/auth.routes.js'
 import adminRoutes from './modules/identity/admin.routes.js'
 import antiAbuseRoutes from './modules/anti-abuse/anti-abuse.routes.js'
+import chatConfigRoutes from './modules/messages/chat-config.routes.js'
+import { getChatConfig } from './modules/messages/chat-config.model.js'
 
 const app = express()
 const httpServer = createServer(app)
@@ -44,6 +46,17 @@ app.use(express.json())
 app.use('/api/auth', authRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/admin/anti-abuse', antiAbuseRoutes)
+app.use('/api/admin/chat-config', chatConfigRoutes)
+
+// Public chat config (clients need message colors, shortcuts, emoji)
+app.get('/api/chat-config', async (_req, res) => {
+  const config = await getChatConfig()
+  res.json({
+    messageColors: config.messageColors,
+    shortcuts: config.shortcuts,
+    customEmoji: config.customEmoji,
+  })
+})
 
 // --- In-memory socket → user mapping ---
 interface SocketUser {
@@ -273,7 +286,7 @@ io.on('connection', (socket) => {
   })
 
   // === AUTH JOIN (member/staff with JWT) ===
-  socket.on('auth:join', async (data: { token: string }, callback) => {
+  socket.on('auth:join', async (data: { token: string; hidden?: boolean }, callback) => {
     try {
       const payload = verifyToken(data.token)
       if (!payload) return callback?.({ error: 'جلسة منتهية' })
@@ -301,17 +314,24 @@ io.on('connection', (socket) => {
       const display = await getUserRoleDisplay(user._id.toString())
 
       currentUserId = user._id.toString()
+      // Hidden login — admin can choose to enter invisible
+      const loginVisibility = data.hidden && permissions.includes('be.hidden')
+        ? 'hidden'
+        : data.hidden && permissions.includes('be.royal_hidden')
+          ? 'royal_hidden'
+          : display.visibility
+
       socketToUser.set(socket.id, {
         id: currentUserId, nickname: user.nickname, avatar: user.avatarColor, currentRoom: null,
         permissions, roleColor: display.color, roleBadge: display.badge,
-        visibility: display.visibility, type: user.type, lastIp: ip,
+        visibility: loginVisibility, type: user.type, lastIp: ip,
       })
 
       callback?.({
         user: {
           id: currentUserId, nickname: user.nickname, avatar: user.avatarColor,
           type: user.type, permissions, roleColor: display.color, roleBadge: display.badge,
-          visibility: display.visibility, roleName: display.roleName,
+          visibility: loginVisibility, roleName: display.roleName,
         },
       })
       io.emit('users:count', getOnlineCount())
@@ -420,13 +440,35 @@ io.on('connection', (socket) => {
       if (await isUserMuted(currentUserId, socketUser.currentRoom)) return callback?.({ error: 'أنت في وضع الكتم' })
       if (await isUserBanned(currentUserId)) return callback?.({ error: 'حسابك محظور' })
 
+      // Word filter + shortcut expansion
+      const chatConfig = await getChatConfig()
+      let finalContent = content
+
+      // Expand shortcuts (e.g. h1 → مرحبا بالجميع)
+      for (const sc of chatConfig.shortcuts) {
+        if (finalContent === sc.code) { finalContent = sc.text; break }
+      }
+
+      // Word filter
+      if (chatConfig.wordFilter.enabled && chatConfig.wordFilter.words.length > 0) {
+        const lower = finalContent.toLowerCase()
+        for (const word of chatConfig.wordFilter.words) {
+          if (lower.includes(word.toLowerCase())) {
+            if (chatConfig.wordFilter.action === 'block') return callback?.({ error: 'الرسالة تحتوي على كلمات محظورة' })
+            if (chatConfig.wordFilter.action === 'replace') {
+              finalContent = finalContent.replace(new RegExp(word, 'gi'), chatConfig.wordFilter.replacement)
+            }
+          }
+        }
+      }
+
       const msg = await Message.create({
         roomId: socketUser.currentRoom,
         senderId: currentUserId,
         senderName: socketUser.nickname,
         senderAvatar: socketUser.avatar,
         type: 'text',
-        content,
+        content: finalContent,
         status: 'visible',
       })
 
@@ -439,7 +481,7 @@ io.on('connection', (socket) => {
         senderRoleColor: socketUser.roleColor,
         senderRoleBadge: socketUser.roleBadge,
         type: 'text' as const,
-        content,
+        content: finalContent,
         createdAt: msg.createdAt.getTime(),
       }
 
@@ -672,6 +714,7 @@ async function start() {
   await seedSuperAdmin()
   await seedPlans()
   await getAntiAbuseConfig() // seeds default if not exists
+  await getChatConfig() // seeds default if not exists
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, Hash, Shield, CreditCard, ScrollText, LogOut, Key, UserCog, Megaphone, ShieldAlert } from 'lucide-react'
+import { LayoutDashboard, Users, Hash, Shield, CreditCard, ScrollText, LogOut, Key, UserCog, Megaphone, ShieldAlert, MessageCircle } from 'lucide-react'
 import { useStore } from '@/hooks/useStore'
 
 const NAV_ITEMS = [
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { to: '/admin/moderation', icon: Shield, label: 'الإشراف' },
   { to: '/admin/broadcast', icon: Megaphone, label: 'البث' },
   { to: '/admin/anti-abuse', icon: ShieldAlert, label: 'مكافحة الإساءة' },
+  { to: '/admin/chat-config', icon: MessageCircle, label: 'إعدادات الدردشة' },
   { to: '/admin/memberships', icon: CreditCard, label: 'العضويات' },
   { to: '/admin/audit', icon: ScrollText, label: 'السجل' },
 ]

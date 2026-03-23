@@ -13,6 +13,7 @@ export default function EntryPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [hiddenLogin, setHiddenLogin] = useState(false)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
   const [onlineCount, setOnlineCount] = useState(0)
   const { setUser, setCurrentRoom, setMessages, setMembers } = useStore()
@@ -78,7 +79,7 @@ export default function EntryPage() {
       localStorage.setItem('token', data.token)
       if (!socket.connected) socket.connect()
 
-      socket.emit('auth:join', { token: data.token }, (socketRes: any) => {
+      socket.emit('auth:join', { token: data.token, hidden: hiddenLogin }, (socketRes: any) => {
         if (socketRes.error) { setLoading(false); return setError(socketRes.error) }
         if (data.user.isAdmin) {
           navigate('/admin', { replace: true })
@@ -159,6 +160,12 @@ export default function EntryPage() {
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 dir="ltr"
               />
+              {tab === 'login' && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={hiddenLogin} onChange={e => setHiddenLogin(e.target.checked)} className="accent-blue-500" />
+                  <span className="text-xs text-gray-500">دخول مخفي (لا يراك أحد)</span>
+                </label>
+              )}
             </>
           )}
 

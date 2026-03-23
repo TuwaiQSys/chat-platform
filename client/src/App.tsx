@@ -14,6 +14,7 @@ import BroadcastPage from './pages/admin/BroadcastPage'
 import AntiAbusePage from './pages/admin/AntiAbusePage'
 import MembershipsPage from './pages/admin/MembershipsPage'
 import AuditPage from './pages/admin/AuditPage'
+import ChatConfigPage from './pages/admin/ChatConfigPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useStore((s) => s.user)
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="moderation" element={<ModerationPage />} />
         <Route path="broadcast" element={<BroadcastPage />} />
         <Route path="anti-abuse" element={<AntiAbusePage />} />
+        <Route path="chat-config" element={<ChatConfigPage />} />
         <Route path="memberships" element={<MembershipsPage />} />
         <Route path="audit" element={<AuditPage />} />
       </Route>
